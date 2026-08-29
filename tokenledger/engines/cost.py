@@ -18,7 +18,13 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from ..loader import Session, load_sessions
+from ..licensing import (
+    fleet_license_spend_usd,
+    license_spend_detail,
+    slice_license_spend_usd,
+)
+from ..loader import Manifest, Session, load_manifest, load_sessions
+from ..reference import WEEKS_PER_MONTH
 from ..slicing import (
     SliceKey,
     filter_weeks,
@@ -96,13 +102,20 @@ def cost_equation(
     week_from: int | None = None,
     week_to: int | None = None,
     sessions: Sequence[Session] | None = None,
+    manifest: Manifest | None = None,
 ) -> dict[str, Any]:
-    """Per-week six-term cost decomposition for every slice."""
+    """Per-week six-term consumption decomposition, plus the additive
+    seat-license spend the multiplicative model can't represent.
+
+    ``total_spend_usd = consumption_spend_usd + license_spend_usd``. The six-term
+    breakdown in ``slices`` is **consumption only** and its ``reconciles``
+    invariant is unchanged.
+    """
     dims = validate_group_by(group_by)
+    manifest = manifest or load_manifest()
     rows = filter_weeks(sessions if sessions is not None else load_sessions(), week_from, week_to)
     buckets = group_by_slice_week(rows, dims)
 
-    slices: dict[str, list[dict[str, Any]]] = {}
     per_slice_key: dict[SliceKey, list[dict[str, Any]]] = {}
     for (key, week), sess in sorted(buckets.items(), key=lambda kv: (kv[0][0], kv[0][1])):
         bd = _breakdown(sess).to_dict()
@@ -117,12 +130,34 @@ def cost_equation(
             "weeks": sorted(weeks, key=lambda r: r["week"]),
         })
 
+    consumption = round(sum(s.cost_usd for s in rows), 2)
+    # consumption_reconciles: every six-term slice-week breakdown reconstructs
+    # its own total (the invariant that must stay intact — license spend is
+    # deliberately NOT forced into that shape).
+    consumption_reconciles = all(
+        w["reconciles"] for sl in result_slices for w in sl["weeks"]
+    )
+    detail = license_spend_detail(manifest, week_from, week_to)
+    license_spend = round(sum(d["license_spend_usd"] for d in detail), 2)
+
     return {
         "engine": "cost_equation",
         "group_by": group_by,
         "week_from": week_from,
         "week_to": week_to,
         "equation": "Users x Sessions/User x Turns/Session x Requests/Turn x Tokens/Request x Price/Token",
+        "consumption_spend_usd": consumption,
+        "license_spend_usd": license_spend,
+        "total_spend_usd": round(consumption + license_spend, 2),
+        "consumption_reconciles": consumption_reconciles,
+        "cost_model": {
+            "consumption": "six-term multiplicative: users x sessions/user x turns/session "
+                           "x requests/turn x tokens/request x price/token (the `slices` below)",
+            "license": "additive: seats_per_lob x lobs x (cost_per_seat_month / weeks_per_month) "
+                       "x weeks_in_window, summed over seat-licensed tools; not decomposed",
+            "weeks_per_month": WEEKS_PER_MONTH,
+        },
+        "license_spend_detail": detail,
         "slices": result_slices,
     }
 
@@ -154,15 +189,24 @@ def _period_factors(sessions: Sequence[Session]) -> _PeriodFactors:
     )
 
 
+CONSUMPTION_DRIVERS = (
+    "adoption_users_usd",
+    "engagement_sessions_per_user_usd",
+    "input_token_workload_usd",
+    "output_token_workload_usd",
+)
+
+
 def driver_decomposition(
     group_by: str,
     period_a: tuple[int, int],
     period_b: tuple[int, int],
     sessions: Sequence[Session] | None = None,
+    manifest: Manifest | None = None,
 ) -> dict[str, Any]:
     """Attribute the spend delta between two week-ranges, per slice.
 
-    Sequential (waterfall) attribution over
+    Sequential (waterfall) attribution of the **consumption** delta over
     ``spend = users x sessions/user x (input$/session + output$/session)``:
 
       1. adoption          (delta users,          other factors at A)
@@ -170,9 +214,14 @@ def driver_decomposition(
       3. input workload    (delta input$/session, users & spu at B)
       4. output workload   (delta output$/session, users & spu at B)
 
-    The four effects sum to ``spend_b - spend_a`` exactly; residual is 0.
+    The four **consumption** effects sum to the consumption delta exactly;
+    ``residual_usd`` is 0. ``drivers`` also carries a fifth ``license_usd``
+    bucket: seat-license spend is seat-count-driven, not decomposed, so with the
+    static simulated seat counts this is non-zero only when the two periods
+    differ in length. ``total_delta_usd`` = consumption delta + ``license_usd``.
     """
     dims = validate_group_by(group_by)
+    manifest = manifest or load_manifest()
     all_sessions = sessions if sessions is not None else load_sessions()
 
     a_rows = filter_weeks(all_sessions, *period_a)
@@ -182,6 +231,12 @@ def driver_decomposition(
 
     a_groups = _group(a_rows, dims)
     b_groups = _group(b_rows, dims)
+
+    fleet_license_delta = round(
+        fleet_license_spend_usd(manifest, *period_b)
+        - fleet_license_spend_usd(manifest, *period_a),
+        4,
+    )
 
     out_slices = []
     for key in sorted(set(a_groups) | set(b_groups)):
@@ -199,21 +254,30 @@ def driver_decomposition(
             b.output_cost_per_session - a.output_cost_per_session
         )
 
-        total_delta = b.total_spend_usd - a.total_spend_usd
+        consumption_delta = b.total_spend_usd - a.total_spend_usd
         attributed = adoption + engagement + input_workload + output_workload
+        # license delta attributable to THIS slice: seat-count-driven, so it is
+        # non-zero only when the two periods differ in week count.
+        license_share = round(
+            slice_license_spend_usd(manifest, dims, key, *period_b)
+            - slice_license_spend_usd(manifest, dims, key, *period_a),
+            4,
+        )
 
         out_slices.append({
             **key_payload(key, dims),
             "spend_a_usd": round(a.total_spend_usd, 4),
             "spend_b_usd": round(b.total_spend_usd, 4),
-            "delta_usd": round(total_delta, 4),
+            "delta_usd": round(consumption_delta, 4),
+            "total_delta_usd": round(consumption_delta + license_share, 4),
             "drivers": {
                 "adoption_users_usd": round(adoption, 4),
                 "engagement_sessions_per_user_usd": round(engagement, 4),
                 "input_token_workload_usd": round(input_workload, 4),
                 "output_token_workload_usd": round(output_workload, 4),
+                "license_usd": license_share,
             },
-            "residual_usd": round(total_delta - attributed, 8),
+            "residual_usd": round(consumption_delta - attributed, 8),
         })
 
     return {
@@ -221,5 +285,13 @@ def driver_decomposition(
         "group_by": group_by,
         "period_a_weeks": list(period_a),
         "period_b_weeks": list(period_b),
+        "consumption_drivers": list(CONSUMPTION_DRIVERS),
+        "license_note": (
+            "`license_usd` is seat-count-driven, not part of the consumption "
+            "waterfall. With static seat counts it is 0 unless the two periods "
+            "differ in week count. The four consumption drivers sum to "
+            "`delta_usd` (residual 0); all five sum to `total_delta_usd`."
+        ),
+        "fleet_license_delta_usd": fleet_license_delta,
         "slices": out_slices,
     }

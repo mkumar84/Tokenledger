@@ -26,6 +26,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from ..loader import Manifest, Session, load_manifest, load_sessions
+from ..reference import WEEKS_PER_MONTH
 from ..slicing import (
     SliceKey,
     filter_weeks,
@@ -232,21 +233,25 @@ def adoption(
                 if seats:
                     util = safe_div(wau_n, seats)
                     unused = max(0, seats - wau_n)
+                    week_cost = (cost_per_seat / WEEKS_PER_MONTH) if cost_per_seat is not None else None
                     week_row["seat_utilization"] = {
                         "licensed_seats": seats,
                         "active_users": wau_n,
                         "utilization_pct": round(util * 100, 2),
                         "unused_seats": unused,
-                        "cost_per_seat_usd": cost_per_seat,
-                        "wasted_seat_cost_usd": round(unused * cost_per_seat, 2)
-                        if cost_per_seat is not None else None,
+                        # cost_per_seat in the registry is $/seat/MONTH; this
+                        # block is per-week, so the wasted figure is weekly.
+                        "cost_per_seat_month_usd": cost_per_seat,
+                        "cost_per_seat_week_usd": round(week_cost, 4) if week_cost is not None else None,
+                        "wasted_seat_cost_week_usd": round(unused * week_cost, 2)
+                        if week_cost is not None else None,
                     }
                 else:
                     week_row["seat_utilization"] = {
                         "licensed_seats": None,
                         "active_users": wau_n,
                         "note": "no licensed seat count declared for this tool",
-                        "cost_per_seat_usd": cost_per_seat,
+                        "cost_per_seat_month_usd": cost_per_seat,
                     }
 
             weeks_out.append(week_row)

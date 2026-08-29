@@ -48,3 +48,9 @@ LOB_OWNERS_FALLBACK: dict[str, str] = {
 # tokens_in * (1 - cache_hit_rate * CACHE_DISCOUNT). Used to estimate the
 # dollar impact of a cache-hit-rate improvement.
 CACHE_DISCOUNT = 0.9
+
+# `cost_per_seat` in the tool registry is dollars per seat per MONTH ($40 Cursor,
+# $60 workspace assistant are realistic monthly SaaS seat prices). Anything
+# reported against a week range converts with `monthly / WEEKS_PER_MONTH`.
+# 4.345 = 52.14 weeks / 12 months.
+WEEKS_PER_MONTH = 4.345

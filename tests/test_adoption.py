@@ -36,7 +36,10 @@ def test_seat_utilization_only_for_tool_slices():
     for w in saas["weeks"]:
         su = w["seat_utilization"]
         assert su["licensed_seats"] == 100  # 25/LOB x 4 LOBs
-        assert su["wasted_seat_cost_usd"] == pytest.approx(su["unused_seats"] * 60, abs=0.01)
+        assert su["cost_per_seat_month_usd"] == 60
+        # per-week block -> weekly-converted wasted figure (Patch 5)
+        assert su["wasted_seat_cost_week_usd"] == pytest.approx(
+            su["unused_seats"] * 60 / 4.345, abs=0.01)
 
 
 def test_cursor_seat_utilization_computed_from_registry_field():
@@ -49,8 +52,9 @@ def test_cursor_seat_utilization_computed_from_registry_field():
         su = w["seat_utilization"]
         assert su["licensed_seats"] == 80  # 20/LOB x 4 LOBs
         assert su["active_users"] <= su["licensed_seats"] or su["utilization_pct"] > 100
-        assert su["cost_per_seat_usd"] == 40
-        assert su["wasted_seat_cost_usd"] == pytest.approx(su["unused_seats"] * 40, abs=0.01)
+        assert su["cost_per_seat_month_usd"] == 40
+        assert su["wasted_seat_cost_week_usd"] == pytest.approx(
+            su["unused_seats"] * 40 / 4.345, abs=0.01)
         assert "note" not in su  # denominator is known now
 
     lob_tool = adoption("lob_tool", 1, 12)
@@ -67,8 +71,8 @@ def test_arc_saas_mcp_assist_underutilized_seats(arcs):
     avg = sum(utils) / len(utils)
     assert avg < 55  # "30%"ish, definitely under-utilized
     assert max(utils) - min(utils) < 35  # roughly flat, no growth trend
-    # wasted-seat dollars are material
-    assert saas["weeks"][-1]["seat_utilization"]["wasted_seat_cost_usd"] > 1000
+    # wasted-seat dollars are material (weekly-converted license spend)
+    assert saas["weeks"][-1]["seat_utilization"]["wasted_seat_cost_week_usd"] > 500
 
 
 def test_arc_commercial_lending_credit_memo_low_engagement(arcs):

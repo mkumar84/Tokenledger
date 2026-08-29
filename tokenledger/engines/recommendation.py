@@ -128,7 +128,7 @@ def recommend(
 
     # --- 2. seat utilization -------------------------------------
     for sl in ad_tool["slices"]:
-        c = _seat_utilization_candidate(sl, manifest)
+        c = _seat_utilization_candidate(sl, manifest, span)
         if c is not None:
             candidates.append(c)
 
@@ -212,13 +212,20 @@ def recommend(
     }
 
 
-def _seat_utilization_candidate(sl: dict[str, Any], manifest: Manifest) -> dict[str, Any] | None:
+def _seat_utilization_candidate(
+    sl: dict[str, Any], manifest: Manifest, span_weeks: int
+) -> dict[str, Any] | None:
     """Seat-utilization rec for one tool-level slice, or None if healthy.
 
     Fires only when full-history utilization is below the ceiling. If the recent
     trend window nonetheless clears the ceiling, the tool is on an adoption ramp
     — downgrade "consolidate" (an action item) to "monitor" (a status note that
     does not carry a dollar-impact claim).
+
+    All dollar figures are seat-license spend, weekly-converted
+    (``cost_per_seat_month / weeks_per_month``): ``dollar_impact_per_week_usd``
+    is the weekly recoverable licence spend; ``dollar_impact_usd`` is that over
+    the queried window — so it stays below ``/cost``'s ``total_spend_usd``.
     """
     tool_id = sl["tool_id"]
     weeks = [w for w in sl["weeks"]
@@ -234,8 +241,10 @@ def _seat_utilization_candidate(sl: dict[str, Any], manifest: Manifest) -> dict[
     recent = utils[-SEAT_UTIL_TREND_WEEKS:] if len(utils) >= SEAT_UTIL_TREND_WEEKS else utils
     recent_util = fmean(u["utilization_pct"] for u in recent)
 
-    wasted_vals = [u["wasted_seat_cost_usd"] for u in utils if u["wasted_seat_cost_usd"] is not None]
-    wasted = round(fmean(wasted_vals), 2) if wasted_vals else None
+    weekly_vals = [u["wasted_seat_cost_week_usd"] for u in utils
+                   if u.get("wasted_seat_cost_week_usd") is not None]
+    wasted_week = round(fmean(weekly_vals), 2) if weekly_vals else None
+    wasted_window = round(wasted_week * span_weeks, 2) if wasted_week is not None else None
 
     base = {
         "source": "adoption.seat_utilization",
@@ -247,7 +256,9 @@ def _seat_utilization_candidate(sl: dict[str, Any], manifest: Manifest) -> dict[
             "avg_seat_utilization_pct": round(avg_util, 1),
             "recent_trend_pct": round(recent_util, 1),
             "trend_window_weeks": len(recent),
-            "wasted_seat_cost_usd": wasted,
+            "wasted_seat_cost_week_usd": wasted_week,
+            "wasted_seat_cost_window_usd": wasted_window,
+            "window_weeks": span_weeks,
         },
     }
 
@@ -258,8 +269,8 @@ def _seat_utilization_candidate(sl: dict[str, Any], manifest: Manifest) -> dict[
             "action": "consolidate",
             "title": f"Consolidate / renegotiate {tool_id} licenses at renewal",
             "impact_type": "dollar",
-            "dollar_impact_usd": wasted,
-            "dollar_impact_per_week_usd": wasted,
+            "dollar_impact_usd": wasted_window,
+            "dollar_impact_per_week_usd": wasted_week,
             "adoption_impact": None,
             "remediation": f"Right-size to ~{avg_util:.0f}% utilised seat count or fold into an "
                            f"existing tool; revisit before the next renewal.",

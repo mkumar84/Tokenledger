@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from tokenledger.api import app
@@ -31,7 +32,12 @@ def test_health():
 def test_cost_endpoint():
     r = client.get("/cost", params={"group_by": "lob_tool", "week_from": 1, "week_to": 4})
     assert r.status_code == 200
-    assert r.json()["slices"]
+    body = r.json()
+    assert body["slices"]
+    assert body["total_spend_usd"] == pytest.approx(
+        body["consumption_spend_usd"] + body["license_spend_usd"], abs=0.01)
+    assert body["consumption_reconciles"] is True
+    assert body["license_spend_detail"]
 
 
 def test_cost_drivers_endpoint():

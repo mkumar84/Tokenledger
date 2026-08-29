@@ -70,7 +70,7 @@ def test_cursor_adoption_ramp_downgraded_to_monitor(recs):
     assert r["action"] == "monitor"
     assert r["evidence"]["avg_seat_utilization_pct"] < 60
     assert r["evidence"]["recent_trend_pct"] >= 60
-    assert r["evidence"]["wasted_seat_cost_usd"] is not None  # same evidence fields
+    assert r["evidence"]["wasted_seat_cost_week_usd"] is not None  # same evidence fields
     # a status note carries no dollar-impact claim
     assert r["dollar_impact_usd"] is None
     assert r["dollar_impact_per_week_usd"] is None

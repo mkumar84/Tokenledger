@@ -15,7 +15,7 @@ This phase = the four backend engines + the API contract. No frontend yet.
 ```bash
 pip install -r requirements.txt
 python run.py                 # http://localhost:8000/docs
-pytest -q                     # 74 tests, incl. all 8 planted-arc assertions
+pytest -q                     # 86 tests, incl. all 8 planted-arc assertions
 ```
 
 Data lives in [`data/`](data/) (`sessions.jsonl`, `manifest.json`) copied from
@@ -30,20 +30,32 @@ dimension selector, never a branched code path.** `lob_id` (4 values) and
 
 ### 1. Cost Equation Engine — `tokenledger/engines/cost.py`
 
-Per week, per slice:
+**Consumption spend**, per week, per slice:
 
 ```
-Total Spend = Users × Sessions/User × Turns/Session × Requests/Turn × Tokens/Request × Price/Token
+consumption = Users × Sessions/User × Turns/Session × Requests/Turn × Tokens/Request × Price/Token
 ```
 
-The six factors are defined so their product **reconstructs total spend exactly**
-(`reconciles: true` on every row; asserted in tests).
+The six factors are defined so their product **reconstructs consumption exactly**
+(`reconciles: true` on every row; asserted).
 
-**Driver decomposition** (`/cost/drivers`) attributes the spend delta between
-two week-ranges sequentially to four buckets — adoption (users), engagement
+**License spend** (`tokenledger/licensing.py`) is *additive*, never folded into
+the multiplicative equation: `seats_per_lob × lobs × (cost_per_seat_month ÷
+4.345) × weeks`, summed over seat-licensed tools. `cost_per_seat` is
+$/seat/month; everything reported against a week range is weekly-converted.
+
+`/cost` returns `consumption_spend_usd`, `license_spend_usd`, and
+`total_spend_usd = consumption + license`. 12-week fleet: **$108.85 consumption
++ $25,408.51 license = $25,517.36**. An enforced invariant
+(`test_recoverable_spend_never_exceeds_total_spend`) keeps any window's
+recommendation `dollar_impact_usd` total ≤ its `total_spend_usd`.
+
+**Driver decomposition** (`/cost/drivers`) attributes the *consumption* delta
+between two week-ranges to four buckets — adoption (users), engagement
 (sessions/user), input-token workload, output-token workload — with a **zero
-residual** (asserted). Waterfall over
-`spend = users × sessions/user × (input$/session + output$/session)`.
+residual** (asserted). A 5th `license_usd` bucket carries the seat-count-driven
+delta (0 unless the two periods differ in length); `total_delta_usd` = the sum
+of all five.
 
 ### 2. Adoption Engine — `tokenledger/engines/adoption.py`
 
@@ -60,11 +72,11 @@ the first 2 weeks of the user's cohort), **sessions/user/week**, **retention**
   human-initiated; managed-agent-initiated sessions are *not* fabricated.
 - **Seat utilization** — tool-dimension slices only (`group_by` `tool` /
   `lob_tool`). `active_users ÷ licensed_seats`, reported as a **percentage** and
-  a **`wasted_seat_cost_usd`** (`unused_seats × cost_per_seat`). Any tool whose
-  `tool_registry` entry declares `seats_per_lob` gets this treatment — presence
-  of the field, not the tool name (`saas_mcp_assist`: 25/LOB, `cursor`: 20/LOB).
-  `group_by=tool` sums seats across all 4 LOBs. Tools with a `cost_per_seat` but
-  no `seats_per_lob` report `active_users` with a note.
+  a weekly **`wasted_seat_cost_week_usd`** (`unused_seats × cost_per_seat_month
+  ÷ 4.345`). Any tool whose `tool_registry` entry declares `seats_per_lob` gets
+  this treatment — presence of the field, not the tool name (`saas_mcp_assist`:
+  25/LOB, `cursor`: 20/LOB). `group_by=tool` sums seats across all 4 LOBs. Tools
+  with a `cost_per_seat` but no `seats_per_lob` report `active_users` with a note.
 
 ### 3. Anti-Pattern Detector — `tokenledger/engines/antipattern.py`
 
@@ -106,7 +118,7 @@ remediation**.
 |--------|--------|------------|
 | `anti_pattern.tool_level_rollup` | (fix) | one platform-level fix for an anti-pattern hitting ≥3 LOBs |
 | `anti_pattern.lob_level` | (fix) | a per-LOB anti-pattern above the materiality floor |
-| `adoption.seat_utilization` | `consolidate` | seat-licensed tool whose utilization is flat-low across the whole window **and** the recent trend — actionable, carries a `wasted_seat_cost_usd` dollar impact |
+| `adoption.seat_utilization` | `consolidate` | seat-licensed tool whose utilization is flat-low across the whole window **and** the recent trend — actionable; `dollar_impact_per_week_usd` = weekly recoverable licence spend, `dollar_impact_usd` = that × window weeks |
 | `adoption.seat_utilization` | `monitor` | full-history utilization is below the ceiling but the last `SEAT_UTIL_TREND_WEEKS` (3) weeks clear it — an early-adoption ramp, not idle licences. A **status note**: no dollar-impact claim, does not count toward action-item totals |
 | `quadrant` | (enablement / deprecation) | Stalled+Efficient → enablement push; Stalled+Wasteful → deprecation review |
 | `governance.tool_shape_similarity` | (consolidate) | two same-category tools with a near-identical usage shape in a single LOB |
@@ -181,7 +193,7 @@ are covered (a meta-test asserts none is left uncovered):
 | wealth_management portfolio_summarizer reference | quadrant `Growing+Efficient`; WAU > 2×; funnel carries users to a non-zero `power_user` tier |
 | retail_banking aml_alert_triage stalled+wasteful | quadrant `Stalled+Wasteful`; deprecation rec; funnel collapses (`habitual` = 0) |
 | claude_code cache-expiration cross-LOB | one tool-level rollup covering exactly 3 LOBs; no standalone per-LOB findings |
-| saas_mcp_assist underutilized seats | avg utilization < 55%, flat across all 12 wks (recent trend also low); `action: consolidate`, `wasted_seat_cost_usd` > $1k |
+| saas_mcp_assist underutilized seats | avg utilization < 55%, flat across all 12 wks (recent trend also low); `action: consolidate`, weekly wasted licence spend > $500 |
 | cursor seat utilization (adoption ramp) | avg < 60% but recent 3-wk trend ≥ 60% → `action: monitor`, not `consolidate`; no dollar-impact claim |
 | cursor/claude_code consolidation (wealth) | `governance.tool_shape_similarity` rec, wealth_management, mean axis rel-diff < 0.1 |
 | cursor commercial_lending legitimate variance | **not** flagged as context bloat; appears in `legitimate_variance_exclusions` |

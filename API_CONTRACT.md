@@ -23,6 +23,32 @@ wins. Re-verify against `GET /docs` (OpenAPI) after any backend change.
 - **`/quadrant`**: gains batch mode (bare call, or `lob_ids` / `tool_ids`
   lists). Single-slice calls are unchanged.
 
+### Patch 5 (spend reconciliation — consumption vs. license)
+
+- **`/cost` `total_spend_usd` is now a combined figure.** The six-term equation
+  is consumption-only (`users × … × price/token`); it cannot represent a flat
+  seat-license fee. `/cost` now returns `consumption_spend_usd` (six-term,
+  reconciles), `license_spend_usd` (additive, `seats × rate × weeks`), and
+  `total_spend_usd = consumption + license`. The `slices[]` six-term breakdown
+  is **unchanged and still consumption-only**.
+- **`cost_per_seat` in the registry is $/seat/MONTH.** Anything reported against
+  a week range is weekly-converted: `cost_per_seat / 4.345` (weeks per month).
+- **`/adoption` `seat_utilization` field renames**: `cost_per_seat_usd` →
+  `cost_per_seat_month_usd`; new `cost_per_seat_week_usd`; `wasted_seat_cost_usd`
+  → `wasted_seat_cost_week_usd` (now genuinely weekly).
+- **`/recommendations` seat recs**: `dollar_impact_per_week_usd` = weekly
+  recoverable licence spend; `dollar_impact_usd` = that × window weeks (so it
+  stays below `/cost total_spend_usd`). Evidence renames:
+  `wasted_seat_cost_usd` → `wasted_seat_cost_week_usd` + `wasted_seat_cost_window_usd`.
+- **`/cost/drivers`** gains a 5th `drivers.license_usd` bucket + `total_delta_usd`
+  + `fleet_license_delta_usd`. The 4 consumption drivers still sum to
+  `delta_usd` (residual 0); all 5 sum to `total_delta_usd`. `license_usd` is 0
+  unless the two periods differ in week count.
+- **Enforced invariant** (`tests/test_cost.py`): for any window,
+  `total_spend_usd ≥ Σ dollar_impact_usd of all recommendations`.
+- **Corrected 12-week figures**: consumption **$108.85**, license **$25,408.51**
+  (cursor $8,837.74 + saas_mcp_assist $16,570.77), total **$25,517.36**.
+
 ### Patch 4 (classification-scope bug fix)
 
 - **`/quadrant` gains a `layer` param** (`L1_managed_agent` | `L2_team_skill` |
@@ -59,7 +85,7 @@ The real shapes:
 | drivers `total_delta_usd`, `adoption_usd`, `engagement_usd`, `input_tokens_usd`, `output_tokens_usd` | `delta_usd`, `adoption_users_usd`, `engagement_sessions_per_user_usd`, `input_token_workload_usd`, `output_token_workload_usd`. `residual_usd` may be `-0.0`. |
 | `/adoption` returns flat metrics + `seat_info` | returns `slices[].weeks[]` per week; seat data is **`seat_utilization`**, per week, and has **no** `recent_trend_pct` / `trend_window_weeks` (those exist only in `/recommendations` evidence). |
 | `wow_growth_pct` / `activation_rate_pct` / `retention_rate_pct` (percent 0–100) | `wow_growth_rate` / `activation_rate` / `retention_rate` — **fractions 0–1**, and `null` where undefined (week 1, or prior WAU = 0). |
-| `seat_info: null` for non-seat tools | `seat_utilization` is still an object: `{"licensed_seats": null, "active_users": N, "note": "...", "cost_per_seat_usd": null}`. Test `licensed_seats !== null`, not `seat_utilization !== null`. |
+| `seat_info: null` for non-seat tools | `seat_utilization` is still an object: `{"licensed_seats": null, "active_users": N, "note": "...", "cost_per_seat_month_usd": null}`. Test `licensed_seats !== null`, not `seat_utilization !== null`. |
 | `/anti-patterns` returns `findings: [...]` with `finding_id` | returns `lob_level_findings` and `tool_level_findings` **objects keyed by id**, plus a separate `legitimate_variance_exclusions` list. No `finding_id`. |
 | excluded findings appear in the findings list with `excluded: true` | excluded findings are **only** in `legitimate_variance_exclusions` — never in the findings objects. No client-side filtering needed. |
 | rollup finding has `lobs_affected`, `remediation` | has `lobs`; remediation lives in `/recommendations`, not on the finding. |
@@ -126,16 +152,36 @@ The real shapes:
 
 ## `GET /cost`
 
-Six-term decomposition, **per slice, per week**.
-`Total Spend = Users × Sessions/User × Turns/Session × Requests/Turn × Tokens/Request × Price/Token`
+Six-term **consumption** decomposition per slice per week, **plus** the additive
+seat-license spend (Patch 5).
+`consumption = Users × Sessions/User × Turns/Session × Requests/Turn × Tokens/Request × Price/Token`
+`total_spend_usd = consumption_spend_usd + license_spend_usd`
 
 ```jsonc
 {
   "engine": "cost_equation",
   "group_by": "lob_tool",
   "week_from": 1,
-  "week_to": 3,
+  "week_to": 12,
   "equation": "Users x Sessions/User x Turns/Session x Requests/Turn x Tokens/Request x Price/Token",
+
+  "consumption_spend_usd": 108.85,      // six-term, = sum of slice-week total_spend_usd
+  "license_spend_usd": 25408.51,        // additive; seats x (monthly/4.345) x weeks
+  "total_spend_usd": 25517.36,          // consumption + license
+  "consumption_reconciles": true,       // every slice-week six-term breakdown reconstructs itself
+  "cost_model": {
+    "consumption": "six-term multiplicative (the `slices` below)",
+    "license": "additive: seats_per_lob x lobs x (cost_per_seat_month / weeks_per_month) x weeks_in_window",
+    "weeks_per_month": 4.345
+  },
+  "license_spend_detail": [
+    { "tool_id": "cursor", "seats_per_lob": 20, "lobs": 4, "seats_total": 80,
+      "cost_per_seat_month_usd": 40, "cost_per_seat_week_usd": 9.206,
+      "weeks": 12, "license_spend_usd": 8837.74, "license_spend_per_lob_usd": 2209.44 },
+    { "tool_id": "saas_mcp_assist", "seats_total": 100, "cost_per_seat_month_usd": 60,
+      "cost_per_seat_week_usd": 13.809, "weeks": 12, "license_spend_usd": 16570.77 }
+  ],
+
   "slices": [
     {
       "lob_id": "insurance",          // present per group_by
@@ -166,14 +212,23 @@ Six-term decomposition, **per slice, per week**.
 }
 ```
 
-Frontend: `reconciles` is a quiet integrity check (small ✓ on hover), not a
-headline metric. The six factors × each other = `total_spend_usd`.
+Frontend:
+- The six factors × each other = the slice-week's `total_spend_usd`
+  (consumption); `reconciles` / `consumption_reconciles` are quiet integrity
+  checks, not headline metrics.
+- The **`slices[]` block is consumption-only** — do not add `license_spend_usd`
+  into it. Show `consumption_spend_usd` / `license_spend_usd` / `total_spend_usd`
+  as three distinct top-line numbers (a licence-heavy fleet is a real finding,
+  not noise to blend away).
+- `license_spend_usd` is the same for any `group_by` and any weeks in the
+  window — it is a fleet figure keyed only to seat counts × window length.
 
 ---
 
 ## `GET /cost/drivers`
 
-Two-period waterfall; the four drivers sum to `delta_usd` with **zero residual**.
+Two-period **consumption** waterfall; the four consumption drivers sum to
+`delta_usd` with **zero residual**. `license_usd` is a separate 5th bucket.
 
 Request: `/cost/drivers?group_by=lob_tool&a_from=1&a_to=4&b_from=9&b_to=12`
 
@@ -183,24 +238,34 @@ Request: `/cost/drivers?group_by=lob_tool&a_from=1&a_to=4&b_from=9&b_to=12`
   "group_by": "lob_tool",
   "period_a_weeks": [1, 4],
   "period_b_weeks": [9, 12],
+  "consumption_drivers": ["adoption_users_usd", "engagement_sessions_per_user_usd",
+                          "input_token_workload_usd", "output_token_workload_usd"],
+  "fleet_license_delta_usd": 0.0,   // seat-count-driven; 0 unless the periods differ in week count
+  "license_note": "…",
   "slices": [
     {
       "lob_id": "insurance",
       "tool_id": "claims_triage_agent",
       "spend_a_usd": 0.8137,
       "spend_b_usd": 1.8883,
-      "delta_usd": 1.0746,
+      "delta_usd": 1.0746,               // CONSUMPTION delta (unchanged meaning)
+      "total_delta_usd": 1.0746,         // delta_usd + drivers.license_usd
       "drivers": {
         "adoption_users_usd": 0.8137,
         "engagement_sessions_per_user_usd": 0.3551,
         "input_token_workload_usd": -0.0487,
-        "output_token_workload_usd": -0.0455
+        "output_token_workload_usd": -0.0455,
+        "license_usd": 0.0               // 5th bucket; not part of the consumption waterfall
       },
-      "residual_usd": 0.0        // always ~0 (may serialize as -0.0)
+      "residual_usd": 0.0        // delta_usd − sum(4 consumption drivers); ~0 (may serialize -0.0)
     }
   ]
 }
 ```
+
+`sum(4 consumption drivers) == delta_usd` (residual 0). `sum(all 5) ==
+total_delta_usd`. With static simulated seat counts `license_usd` is 0 whenever
+the two periods have the same number of weeks.
 
 Waterfall: `spend_a_usd` → +/− the four `drivers` → `spend_b_usd`.
 
@@ -249,8 +314,9 @@ Per slice: `funnel` (snapshot) + `activation_by_cohort_week` (once) + `weeks[]` 
             "active_users": 51,
             "utilization_pct": 63.75,          // PERCENT 0–100 here (unlike the rates above)
             "unused_seats": 29,
-            "cost_per_seat_usd": 40,
-            "wasted_seat_cost_usd": 1160
+            "cost_per_seat_month_usd": 40,     // registry value ($/seat/MONTH)
+            "cost_per_seat_week_usd": 9.206,   // = monthly / 4.345
+            "wasted_seat_cost_week_usd": 267.0 // unused_seats × cost_per_seat_week_usd (this block is per-week)
           }
         }
       ]
@@ -263,7 +329,7 @@ Per slice: `funnel` (snapshot) + `activation_by_cohort_week` (once) + `weeks[]` 
 
 - seat-licensed tool (`cursor`, `saas_mcp_assist`): the full object above.
 - any other tool (managed agents, `claude_code`):
-  `{"licensed_seats": null, "active_users": N, "note": "no licensed seat count declared for this tool", "cost_per_seat_usd": null}`.
+  `{"licensed_seats": null, "active_users": N, "note": "no licensed seat count declared for this tool", "cost_per_seat_month_usd": null}`.
 - `group_by=lob`: key is **absent** entirely.
 
 Detect "has seat data" via `seat_utilization?.licensed_seats != null`.
@@ -392,8 +458,8 @@ No `group_by`. Ranked, pre-sorted — **do not re-sort client-side.**
       "tool_id": "saas_mcp_assist",
       "owner": "Group Platform Eng",            // always a real name, never null
       "impact_type": "dollar",                  // "dollar" | "adoption" | "both"
-      "dollar_impact_usd": 4510.0,
-      "dollar_impact_per_week_usd": 4510.0,
+      "dollar_impact_usd": 12455.76,            // recoverable licence spend OVER THE WINDOW
+      "dollar_impact_per_week_usd": 1037.98,    // recoverable licence spend PER WEEK
       "adoption_impact": null,                  // string when impact_type involves adoption
       "quadrant": null,                         // "Growing + Wasteful" etc., or null
       "remediation": "Right-size to ~25% utilised seat count …",  // always a non-empty string
@@ -401,7 +467,9 @@ No `group_by`. Ranked, pre-sorted — **do not re-sort client-side.**
         "avg_seat_utilization_pct": 24.8,
         "recent_trend_pct": 31.0,
         "trend_window_weeks": 3,
-        "wasted_seat_cost_usd": 4510.0
+        "wasted_seat_cost_week_usd": 1037.98,
+        "wasted_seat_cost_window_usd": 12455.76,
+        "window_weeks": 12
       }
     }
   ],
@@ -418,7 +486,7 @@ No `group_by`. Ranked, pre-sorted — **do not re-sort client-side.**
 
 | `source` | `action`? | extra fields | `evidence` shape |
 |---|---|---|---|
-| `adoption.seat_utilization` | `consolidate` \| `monitor` | — | `{avg_seat_utilization_pct, recent_trend_pct, trend_window_weeks, wasted_seat_cost_usd}` |
+| `adoption.seat_utilization` | `consolidate` \| `monitor` | — | `{avg_seat_utilization_pct, recent_trend_pct, trend_window_weeks, wasted_seat_cost_week_usd, wasted_seat_cost_window_usd, window_weeks}` |
 | `quadrant` | — | `adoption_move_estimate` (float), `quadrant` (string) | the quadrant `signals` object (see `/quadrant`) |
 | `anti_pattern.tool_level_rollup` | — | `lobs` (array) | `{week_from, week_to, lobs, category}` |
 | `anti_pattern.lob_level` | — | `category` | the quadrant `signals` for that slice |
