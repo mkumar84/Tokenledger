@@ -15,7 +15,7 @@ This phase = the four backend engines + the API contract. No frontend yet.
 ```bash
 pip install -r requirements.txt
 python run.py                 # http://localhost:8000/docs
-pytest -q                     # 55 tests, incl. all 8 planted-arc assertions
+pytest -q                     # 58 tests, incl. all 8 planted-arc assertions
 ```
 
 Data lives in [`data/`](data/) (`sessions.jsonl`, `manifest.json`) copied from
@@ -95,6 +95,22 @@ dollar and/or adoption impact (labelled), an **unambiguous owner** (LOB owner or
 tool owner), a **quadrant** where a slice is involved, and a **one-line
 remediation**.
 
+**Recommendation sources & actions:**
+
+| source | action | what it is |
+|--------|--------|------------|
+| `anti_pattern.tool_level_rollup` | (fix) | one platform-level fix for an anti-pattern hitting ≥3 LOBs |
+| `anti_pattern.lob_level` | (fix) | a per-LOB anti-pattern above the materiality floor |
+| `adoption.seat_utilization` | `consolidate` | seat-licensed tool whose utilization is flat-low across the whole window **and** the recent trend — actionable, carries a `wasted_seat_cost_usd` dollar impact |
+| `adoption.seat_utilization` | `monitor` | full-history utilization is below the ceiling but the last `SEAT_UTIL_TREND_WEEKS` (3) weeks clear it — an early-adoption ramp, not idle licences. A **status note**: no dollar-impact claim, does not count toward action-item totals |
+| `quadrant` | (enablement / deprecation) | Stalled+Efficient → enablement push; Stalled+Wasteful → deprecation review |
+| `governance.tool_shape_similarity` | (consolidate) | two same-category tools with a near-identical usage shape in a single LOB |
+
+The `consolidate` vs `monitor` split on seat utilization mirrors the
+anti-pattern detector's legitimate-variance exclusion: don't fire an action rec
+off an average when the trend tells a different story. It is driven by
+`seats_per_lob` presence in `tool_registry`, not by tool name.
+
 **Quadrant** (`tokenledger/engines/quadrant.py`) — Growing/Stalled × Efficient/
 Wasteful, from WoW adoption growth + cost-per-session level & trend:
 
@@ -145,7 +161,8 @@ are covered (a meta-test asserts none is left uncovered):
 | wealth_management portfolio_summarizer reference | quadrant `Growing+Efficient`; WAU > 2× |
 | retail_banking aml_alert_triage stalled+wasteful | quadrant `Stalled+Wasteful`; deprecation rec |
 | claude_code cache-expiration cross-LOB | one tool-level rollup covering exactly 3 LOBs; no standalone per-LOB findings |
-| saas_mcp_assist underutilized seats | avg utilization < 55%, roughly flat; `wasted_seat_cost_usd` > $1k; consolidation rec |
+| saas_mcp_assist underutilized seats | avg utilization < 55%, flat across all 12 wks (recent trend also low); `action: consolidate`, `wasted_seat_cost_usd` > $1k |
+| cursor seat utilization (adoption ramp) | avg < 60% but recent 3-wk trend ≥ 60% → `action: monitor`, not `consolidate`; no dollar-impact claim |
 | cursor/claude_code consolidation (wealth) | `governance.tool_shape_similarity` rec, wealth_management, mean axis rel-diff < 0.1 |
 | cursor commercial_lending legitimate variance | **not** flagged as context bloat; appears in `legitimate_variance_exclusions` |
 

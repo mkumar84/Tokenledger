@@ -42,10 +42,49 @@ def test_no_regression_check_present_and_passes_here(recs):
 
 
 def test_arc_saas_seat_consolidation_recommended(recs):
-    r = next(x for x in recs["recommendations"] if x["tool_id"] == "saas_mcp_assist")
-    assert r["source"] == "adoption.seat_utilization"
+    r = next(x for x in recs["recommendations"] if x["tool_id"] == "saas_mcp_assist"
+             and x["source"] == "adoption.seat_utilization")
+    assert r["action"] == "consolidate"
     assert r["dollar_impact_usd"] > 1000
     assert r["owner"] == "Group Platform Eng"
+
+
+def test_saas_flat_low_stays_consolidate(recs):
+    """saas_mcp_assist is flat-low across all 12 weeks — recent trend also below
+    the 60% ceiling, so it stays an actionable consolidate rec."""
+    r = next(x for x in recs["recommendations"]
+             if x["tool_id"] == "saas_mcp_assist" and x["source"] == "adoption.seat_utilization")
+    assert r["action"] == "consolidate"
+    assert r["evidence"]["avg_seat_utilization_pct"] < 60
+    assert r["evidence"]["recent_trend_pct"] < 60
+    assert r["impact_type"] == "dollar" and r["dollar_impact_per_week_usd"] is not None
+
+
+def test_cursor_adoption_ramp_downgraded_to_monitor(recs):
+    """cursor's 12-week average is below the ceiling but its last weeks clear it
+    — an adoption ramp, not idle licences. Downgraded to a status note."""
+    seat_recs = [x for x in recs["recommendations"]
+                 if x["tool_id"] == "cursor" and x["source"] == "adoption.seat_utilization"]
+    assert len(seat_recs) == 1
+    r = seat_recs[0]
+    assert r["action"] == "monitor"
+    assert r["evidence"]["avg_seat_utilization_pct"] < 60
+    assert r["evidence"]["recent_trend_pct"] >= 60
+    assert r["evidence"]["wasted_seat_cost_usd"] is not None  # same evidence fields
+    # a status note carries no dollar-impact claim
+    assert r["dollar_impact_usd"] is None
+    assert r["dollar_impact_per_week_usd"] is None
+    assert r["impact_type"] == "adoption"
+
+
+def test_no_tool_is_special_cased_by_name():
+    """The trend check keys off seats_per_lob presence, not tool_id."""
+    import inspect
+
+    from tokenledger.engines import recommendation
+
+    src = inspect.getsource(recommendation._seat_utilization_candidate)
+    assert "cursor" not in src and "saas_mcp_assist" not in src
 
 
 def test_arc_aml_deprecation_recommended(recs):

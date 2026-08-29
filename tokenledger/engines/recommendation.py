@@ -37,6 +37,11 @@ import os as _os
 MATERIALITY_USD_PER_WEEK = float(_os.environ.get("TOKENLEDGER_MATERIALITY_USD_PER_WEEK", 8.0))
 MATERIALITY_ADOPTION_MOVE = 0.10
 SEAT_UTIL_RECO_CEIL = 60.0
+# A tool whose full-history seat utilization is below the ceiling but whose last
+# SEAT_UTIL_TREND_WEEKS clear it is on an adoption ramp, not flat-low — same
+# philosophy as the anti-pattern legitimate-variance exclusion: don't fire an
+# action rec on an average when the trend says otherwise.
+SEAT_UTIL_TREND_WEEKS = 3
 REGRESSION_OUTCOME_MULT = 1.2
 
 # sources whose value is structural — never gated on weekly dollar run-rate
@@ -123,31 +128,9 @@ def recommend(
 
     # --- 2. seat utilization -------------------------------------
     for sl in ad_tool["slices"]:
-        tool_id = sl["tool_id"]
-        weeks = [w for w in sl["weeks"] if "seat_utilization" in w]
-        utils = [w["seat_utilization"] for w in weeks if w["seat_utilization"].get("utilization_pct") is not None]
-        if not utils:
-            continue
-        avg_util = fmean(u["utilization_pct"] for u in utils)
-        if avg_util >= SEAT_UTIL_RECO_CEIL:
-            continue
-        wasted = fmean(u["wasted_seat_cost_usd"] for u in utils if u["wasted_seat_cost_usd"] is not None) \
-            if any(u["wasted_seat_cost_usd"] is not None for u in utils) else None
-        candidates.append({
-            "title": f"Consolidate / renegotiate {tool_id} licenses at renewal",
-            "source": "adoption.seat_utilization",
-            "lob_id": None,
-            "tool_id": tool_id,
-            "owner": manifest.tool_owner(tool_id),
-            "impact_type": "dollar",
-            "dollar_impact_usd": round(wasted, 2) if wasted is not None else None,
-            "dollar_impact_per_week_usd": round(wasted, 2) if wasted is not None else None,
-            "adoption_impact": None,
-            "quadrant": None,
-            "remediation": f"Right-size to ~{avg_util:.0f}% utilised seat count or fold into an "
-                           f"existing tool; revisit before the next renewal.",
-            "evidence": {"avg_seat_utilization_pct": round(avg_util, 1)},
-        })
+        c = _seat_utilization_candidate(sl, manifest)
+        if c is not None:
+            candidates.append(c)
 
     # --- 3. quadrant-driven adoption recs (per LOB primary agent) -----
     for lob, agents in manifest.lob_managed_agents.items():
@@ -226,6 +209,79 @@ def recommend(
         "no_regression_check": regression,
         "recommendations": kept,
         "suppressed": suppressed,
+    }
+
+
+def _seat_utilization_candidate(sl: dict[str, Any], manifest: Manifest) -> dict[str, Any] | None:
+    """Seat-utilization rec for one tool-level slice, or None if healthy.
+
+    Fires only when full-history utilization is below the ceiling. If the recent
+    trend window nonetheless clears the ceiling, the tool is on an adoption ramp
+    — downgrade "consolidate" (an action item) to "monitor" (a status note that
+    does not carry a dollar-impact claim).
+    """
+    tool_id = sl["tool_id"]
+    weeks = [w for w in sl["weeks"]
+             if "seat_utilization" in w and w["seat_utilization"].get("utilization_pct") is not None]
+    if not weeks:
+        return None
+    utils = [w["seat_utilization"] for w in weeks]
+
+    avg_util = fmean(u["utilization_pct"] for u in utils)
+    if avg_util >= SEAT_UTIL_RECO_CEIL:
+        return None
+
+    recent = utils[-SEAT_UTIL_TREND_WEEKS:] if len(utils) >= SEAT_UTIL_TREND_WEEKS else utils
+    recent_util = fmean(u["utilization_pct"] for u in recent)
+
+    wasted_vals = [u["wasted_seat_cost_usd"] for u in utils if u["wasted_seat_cost_usd"] is not None]
+    wasted = round(fmean(wasted_vals), 2) if wasted_vals else None
+
+    base = {
+        "source": "adoption.seat_utilization",
+        "lob_id": None,
+        "tool_id": tool_id,
+        "owner": manifest.tool_owner(tool_id),
+        "quadrant": None,
+        "evidence": {
+            "avg_seat_utilization_pct": round(avg_util, 1),
+            "recent_trend_pct": round(recent_util, 1),
+            "trend_window_weeks": len(recent),
+            "wasted_seat_cost_usd": wasted,
+        },
+    }
+
+    if recent_util < SEAT_UTIL_RECO_CEIL:
+        # genuinely flat-low — actionable consolidation
+        return {
+            **base,
+            "action": "consolidate",
+            "title": f"Consolidate / renegotiate {tool_id} licenses at renewal",
+            "impact_type": "dollar",
+            "dollar_impact_usd": wasted,
+            "dollar_impact_per_week_usd": wasted,
+            "adoption_impact": None,
+            "remediation": f"Right-size to ~{avg_util:.0f}% utilised seat count or fold into an "
+                           f"existing tool; revisit before the next renewal.",
+        }
+
+    # below-average on the full history, but the last weeks clear the ceiling:
+    # adoption ramp, not waste — status note, no dollar-impact claim.
+    return {
+        **base,
+        "action": "monitor",
+        "title": f"Monitor {tool_id} seat utilization (trending toward healthy)",
+        "impact_type": "adoption",
+        "dollar_impact_usd": None,
+        "dollar_impact_per_week_usd": None,
+        "adoption_impact": (
+            f"Seat utilization has climbed to ~{recent_util:.0f}% (last "
+            f"{len(recent)} wks) from a {avg_util:.0f}% full-history average — "
+            f"early-adoption ramp, not idle licences. Re-check at renewal."
+        ),
+        "adoption_move_estimate": 0.0,
+        "remediation": "No action yet — recheck seat count at renewal; consolidate only if "
+                       "utilization plateaus below the ceiling.",
     }
 
 
