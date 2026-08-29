@@ -23,6 +23,25 @@ wins. Re-verify against `GET /docs` (OpenAPI) after any backend change.
 - **`/quadrant`**: gains batch mode (bare call, or `lob_ids` / `tool_ids`
   lists). Single-slice calls are unchanged.
 
+### Patch 4 (classification-scope bug fix)
+
+- **`/quadrant` gains a `layer` param** (`L1_managed_agent` | `L2_team_skill` |
+  `L3_interactive_harness` | `L4_adhoc`). It restricts the classification to
+  sessions of that layer.
+- **The Group Overview "LOB × Agent" chart must call
+  `GET /quadrant?layer=L1_managed_agent&week_from=&week_to=`** and plot the
+  `results[]` rows where **both** `lob_id` and `tool_id` are non-null — one
+  point per (LOB, managed agent). The bare-batch `tool_id: null` rows are a
+  **whole-LOB blend of every tool** (managed agents + `claude_code` + `cursor`
+  + `saas_mcp_assist`) and must **not** be used for any agent-level view — that
+  blend is what made Retail Banking read "Growing + Efficient" while its only
+  managed agent was "Stalled + Wasteful".
+- **`/health` gains `tool_categories` and `lob_managed_agents`** so the frontend
+  can build the chart axes and tell managed agents from interactive tools.
+- Interactive-tool quadrant positioning belongs on the **Tool view**
+  (`?layer=L3_interactive_harness` / `L4_adhoc`, or the plain
+  `?tool_ids=…` batch), never mixed into the LOB × Agent chart.
+
 ---
 
 ## ⚠️ Corrections vs. the reconstructed draft
@@ -60,6 +79,7 @@ The real shapes:
 | `a_from`, `a_to`, `b_from`, `b_to` | `/cost/drivers` | int ≥ 1 | **yes** | — | period A and period B week bounds, inclusive |
 | `lob_id`, `tool_id` | `/quadrant` | string | no | — | singular → single-slice flat response |
 | `lob_ids`, `tool_ids` | `/quadrant` | CSV string | no | — | plural → batch response; bare `/quadrant` = batch over everything |
+| `layer` | `/quadrant` | `L1_managed_agent` \| `L2_team_skill` \| `L3_interactive_harness` \| `L4_adhoc` | no | — | scope to one session layer; works with single **and** batch |
 | `week_from`, `week_to` | `/quadrant` | int ≥ 1 | **yes** | — | |
 
 - `group_by=lob` → each slice carries only `lob_id`. `group_by=tool` → only
@@ -84,6 +104,18 @@ The real shapes:
   "tools": ["aml_alert_triage", "claims_triage_agent", "claude_code",
             "credit_memo_agent", "cursor", "fraud_ring_detector",
             "portfolio_summarizer", "saas_mcp_assist"],
+  "tool_categories": {                 // Patch 4 — needed for the LOB × Agent chart
+    "claims_triage_agent": "managed_agent",
+    "claude_code": "interactive_dev_harness",
+    "saas_mcp_assist": "saas_mcp"
+    // … one entry per tool
+  },
+  "lob_managed_agents": {               // Patch 4
+    "insurance": ["claims_triage_agent", "fraud_ring_detector"],
+    "retail_banking": ["aml_alert_triage"],
+    "wealth_management": ["portfolio_summarizer"],
+    "commercial_lending": ["credit_memo_agent"]
+  },
   "cors_allowed_origins": ["http://localhost:5173", "..."]
 }
 ```
@@ -428,14 +460,25 @@ Growing/Stalled × Efficient/Wasteful. `week_from` and `week_to` are **required*
 | `?tool_id=Y&week_from=&week_to=` | single | flat object |
 | `?lob_id=X&tool_id=Y&week_from=&week_to=` | single | flat object |
 | `?week_from=&week_to=` (no id filter) | batch — all | `{results: [...]}` for every LOB, every tool, every populated (lob,tool) cell |
+| `?layer=L1_managed_agent&week_from=&week_to=` | batch — agent | `{results: [...]}` for every LOB (its managed-agent aggregate) + every (LOB, managed_agent) cell — **the LOB × Agent chart** |
 | `?lob_ids=a,b&week_from=&week_to=` | batch | `{results: [...]}` — those LOBs, LOB-level |
 | `?tool_ids=a,b&week_from=&week_to=` | batch | `{results: [...]}` — those tools, tool-level |
 | `?lob_ids=a,b&tool_ids=c,d&week_from=&week_to=` | batch | `{results: [...]}` — the cross-product cells |
+
+`layer` combines with any of the above (single or batch) to restrict the
+classification to one session layer.
 
 The singular `lob_id` / `tool_id` params keep the **exact pre-Patch-3 flat
 shape** (no `results` key). The plural `lob_ids` / `tool_ids` params (or no id
 param at all) trigger batch mode. Not a breaking change: bare `/quadrant` used
 to 422, now returns the all-slices batch.
+
+**Scope matters — read this before wiring a chart.** `/quadrant?lob_id=X` (and
+the bare-batch `tool_id: null` rows) classify **every session in the LOB across
+every tool** — managed agents blended with `claude_code`, `cursor`,
+`saas_mcp_assist`. A healthy interactive-tool footprint will mask a wasteful or
+stalled managed agent. For any **agent-level** view pass
+`layer=L1_managed_agent` and use the `(lob_id, tool_id)` cells.
 
 ### Single-slice (flat) response
 
@@ -483,13 +526,33 @@ Request: `/quadrant?week_from=1&week_to=12`
 ```
 
 Each `results[]` entry is exactly the single-slice flat shape (minus the
-echoed `week_from`/`week_to`). **Group Overview**: one
-`GET /quadrant?week_from=1&week_to=12` call, then filter
-`results` to `tool_id === null` → the 4 LOB quadrants (replaces 4 calls).
-**LOB × Tool matrix**: same single call, filter to rows where both ids are
-non-null → the populated cells (replaces up to 32 calls). Empty cells are
-omitted from the bare-batch `results`; request them explicitly with
+echoed `week_from`/`week_to`); rows carry `"layer"` only when the request set it.
+Empty cells are omitted from a bare batch; request them explicitly with
 `lob_ids=…&tool_ids=…` to get a `quadrant: null` row for a checked-but-empty cell.
+
+**Group Overview "LOB × Agent" chart** — one call:
+
+```
+GET /quadrant?layer=L1_managed_agent&week_from=1&week_to=12
+```
+
+`results[]` then contains, for that window:
+
+| filter | use |
+|---|---|
+| `lob_id && tool_id` (cells) | one point per (LOB, managed agent) — this is the chart. Insurance has two (`claims_triage_agent`, `fraud_ring_detector`). |
+| `lob_id && !tool_id` | the LOB's managed-agent aggregate, if you want a single dot per LOB |
+
+Verified against the planted arcs (weeks 1–12): Insurance/`claims_triage_agent`
+→ Growing + Efficient, Retail Banking/`aml_alert_triage` → **Stalled +
+Wasteful**, Wealth Mgmt/`portfolio_summarizer` → Growing + Efficient, Commercial
+Lending/`credit_memo_agent` → Stalled + Efficient. Use `week_from=1&week_to=6`
+vs `9&12` to show the claims-triage transition.
+
+**LOB × Tool matrix** (interactive tools): `GET /quadrant?week_from=1&week_to=12`
+(no layer) and filter to `(lob_id, tool_id)` cells, or scope to
+`?layer=L3_interactive_harness`. Do not use the `tool_id: null` rows for any
+per-agent or per-tool view — they are whole-LOB blends.
 
 ---
 

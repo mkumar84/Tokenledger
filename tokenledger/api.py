@@ -61,6 +61,10 @@ def health() -> dict:
         "weeks": list(m.weeks),
         "lobs": m.lobs,
         "tools": sorted(m.tool_registry),
+        # taxonomy the frontend needs to build the "LOB x Agent" chart axes and
+        # tell managed agents apart from interactive tools
+        "tool_categories": {t: meta.get("category") for t, meta in m.tool_registry.items()},
+        "lob_managed_agents": m.lob_managed_agents,
         "cors_allowed_origins": cors_origins(),
     }
 
@@ -142,12 +146,23 @@ def _csv(val: str | None) -> list[str] | None:
     return items or None
 
 
+Layer = Literal[
+    "L1_managed_agent", "L2_team_skill", "L3_interactive_harness", "L4_adhoc"
+]
+
+
 @app.get("/quadrant")
 def quadrant_endpoint(
     lob_id: str | None = None,
     tool_id: str | None = None,
     lob_ids: str | None = Query(None, description="comma-separated; batch mode"),
     tool_ids: str | None = Query(None, description="comma-separated; batch mode"),
+    layer: Layer | None = Query(
+        None,
+        description="scope to one session layer; use L1_managed_agent for the "
+                    "Group Overview 'LOB x Agent' chart so it is not blended "
+                    "with interactive-tool usage",
+    ),
     week_from: int = Query(..., ge=1),
     week_to: int = Query(..., ge=1),
 ) -> dict:
@@ -157,8 +172,8 @@ def quadrant_endpoint(
     # Single-slice mode (unchanged contract): a singular lob_id/tool_id and no
     # plural list params -> flat object response.
     if lids is None and tids is None and (lob_id is not None or tool_id is not None):
-        return classify(lob_id, tool_id, week_from, week_to)
+        return classify(lob_id, tool_id, week_from, week_to, layer=layer)
 
     # Batch mode: bare /quadrant -> every LOB, every tool, every populated cell;
     # explicit lists -> just those (cross product when both lists are given).
-    return classify_batch(lids, tids, week_from, week_to)
+    return classify_batch(lids, tids, week_from, week_to, layer=layer)

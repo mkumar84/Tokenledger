@@ -4,7 +4,7 @@ is wrong — the data is already validated (see data/validate.py)."""
 import pytest
 
 from tokenledger.engines.antipattern import detect
-from tokenledger.engines.quadrant import classify
+from tokenledger.engines.quadrant import classify, classify_batch
 from tokenledger.engines.recommendation import recommend
 
 
@@ -33,6 +33,53 @@ def test_quadrant_arc(arc_name, arcs):
     for lob, tool, weeks, expected in QUADRANT_ARCS[arc_name]:
         got = classify(lob, tool, *weeks)["quadrant"]
         assert got == expected, f"{arc_name} {weeks}: got {got}, want {expected}"
+
+
+# --- Group Overview "LOB x Agent" chart: layer-scoped, must match the arcs ---
+# Regression for the bug where the chart plotted the whole-LOB aggregate
+# (managed agent blended with claude_code / cursor / saas_mcp_assist), which
+# dragged a wasteful stalled agent toward "Growing + Efficient" and contradicted
+# that agent's own deprecation recommendation.
+
+GROUP_OVERVIEW_EXPECTED = {
+    ("insurance", "claims_triage_agent"): "Growing + Efficient",   # post-fix full range
+    ("retail_banking", "aml_alert_triage"): "Stalled + Wasteful",
+    ("wealth_management", "portfolio_summarizer"): "Growing + Efficient",
+    ("commercial_lending", "credit_memo_agent"): "Stalled + Efficient",
+}
+
+
+def test_group_overview_lob_agent_quadrants_match_arcs():
+    batch = classify_batch(None, None, 1, 12, layer="L1_managed_agent")
+    cells = {(r["lob_id"], r["tool_id"]): r["quadrant"]
+             for r in batch["results"] if r["lob_id"] and r["tool_id"]}
+    for key, expected in GROUP_OVERVIEW_EXPECTED.items():
+        assert cells.get(key) == expected, f"{key}: got {cells.get(key)}, want {expected}"
+
+
+def test_layer_scope_changes_the_answer_for_blended_lobs():
+    """The whole-LOB aggregate and the managed-agent-scoped classification are
+    genuinely different for retail_banking — proof the layer scope matters."""
+    whole_lob = classify("retail_banking", None, 1, 12)["quadrant"]
+    agent_scoped = classify("retail_banking", "aml_alert_triage", 1, 12,
+                            layer="L1_managed_agent")["quadrant"]
+    assert whole_lob != agent_scoped
+    assert agent_scoped == "Stalled + Wasteful"
+
+
+def test_group_overview_quadrant_agrees_with_its_recommendation():
+    """Bug slipped through because the chart and the rec measured different
+    scopes. For every quadrant-sourced recommendation, the chart's classification
+    of that same (lob, agent) must equal the quadrant the rec asserts."""
+    recs = recommend(1, 12)["recommendations"]
+    quad_recs = [r for r in recs if r["source"] == "quadrant"]
+    assert quad_recs
+    for r in quad_recs:
+        chart = classify(r["lob_id"], r["tool_id"], 1, 12,
+                         layer="L1_managed_agent")["quadrant"]
+        assert chart == r["quadrant"], (
+            f"{r['lob_id']}/{r['tool_id']}: chart says {chart}, rec says {r['quadrant']}"
+        )
 
 
 # --- anti-pattern / governance arcs ---------------------------------

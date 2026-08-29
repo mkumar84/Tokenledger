@@ -15,7 +15,7 @@ This phase = the four backend engines + the API contract. No frontend yet.
 ```bash
 pip install -r requirements.txt
 python run.py                 # http://localhost:8000/docs
-pytest -q                     # 68 tests, incl. all 8 planted-arc assertions
+pytest -q                     # 74 tests, incl. all 8 planted-arc assertions
 ```
 
 Data lives in [`data/`](data/) (`sessions.jsonl`, `manifest.json`) copied from
@@ -125,6 +125,14 @@ Wasteful, from WoW adoption growth + cost-per-session level & trend:
 - *Efficient/Wasteful*: zero-outcome rate, cost/session vs peer p60, cache rate,
   cost/session trend.
 
+`classify(lob_id, tool_id, …, layer=…)` — `lob_id` alone classifies the
+**whole LOB across every tool** (managed + interactive blended); pass
+`layer="L1_managed_agent"` (+ the agent as `tool_id`) for an agent-scoped
+answer. The Group Overview "LOB × Agent" chart must use the layer-scoped form —
+the blend otherwise masks a wasteful/stalled agent behind healthy
+interactive-tool usage. A regression test asserts every quadrant-sourced
+recommendation agrees with the layer-scoped classification of the same slice.
+
 **Quality gates:**
 - *Materiality* — tactical per-slice recs need > **$8/week** impact (calibrated
   to Northbridge's synthetic scale; override with
@@ -151,7 +159,7 @@ history) unless noted.
 | `GET /adoption` | `group_by=lob\|tool\|lob_tool`, `week_from`, `week_to` |
 | `GET /anti-patterns` | `group_by=lob\|tool`, `week_from`, `week_to` |
 | `GET /recommendations` | `week_from`, `week_to` |
-| `GET /quadrant` | single: `lob_id` / `tool_id`; batch: `lob_ids` / `tool_ids` (CSV) or none; `week_from`, `week_to` (required) |
+| `GET /quadrant` | single: `lob_id` / `tool_id`; batch: `lob_ids` / `tool_ids` (CSV) or none; `layer` (scope to a session layer — use `L1_managed_agent` for the LOB×Agent chart); `week_from`, `week_to` (required) |
 | `GET /health` | — |
 
 OpenAPI docs at `/docs`. Deploy: `railway.json` / `Procfile` provided

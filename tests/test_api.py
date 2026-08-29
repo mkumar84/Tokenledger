@@ -94,3 +94,29 @@ def test_quadrant_explicit_batch_lists():
 
 def test_quadrant_requires_weeks():
     assert client.get("/quadrant").status_code == 422
+
+
+def test_quadrant_layer_scopes_to_managed_agent():
+    r = client.get("/quadrant", params={
+        "layer": "L1_managed_agent", "week_from": 1, "week_to": 12})
+    assert r.status_code == 200
+    cells = {(x["lob_id"], x["tool_id"]): x["quadrant"]
+             for x in r.json()["results"] if x["lob_id"] and x["tool_id"]}
+    assert cells[("retail_banking", "aml_alert_triage")] == "Stalled + Wasteful"
+    assert cells[("insurance", "claims_triage_agent")] == "Growing + Efficient"
+    # the un-scoped whole-LOB row disagrees — that was the bug
+    whole = client.get("/quadrant", params={
+        "lob_id": "retail_banking", "week_from": 1, "week_to": 12}).json()
+    assert whole["quadrant"] != "Stalled + Wasteful"
+
+
+def test_quadrant_bad_layer_rejected():
+    assert client.get("/quadrant", params={
+        "layer": "L9_bogus", "week_from": 1, "week_to": 12}).status_code == 422
+
+
+def test_health_exposes_agent_taxonomy():
+    h = client.get("/health").json()
+    assert h["lob_managed_agents"]["retail_banking"] == ["aml_alert_triage"]
+    assert h["tool_categories"]["aml_alert_triage"] == "managed_agent"
+    assert h["tool_categories"]["cursor"] == "interactive_dev_harness"

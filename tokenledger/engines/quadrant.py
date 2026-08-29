@@ -82,9 +82,19 @@ def classify(
     week_to: int,
     sessions: Sequence[Session] | None = None,
     manifest: Manifest | None = None,
+    layer: str | None = None,
 ) -> dict[str, Any]:
+    """Quadrant for one slice.
+
+    ``layer`` (e.g. ``"L1_managed_agent"``) restricts the classification to
+    sessions of that layer only. The Group Overview "LOB x Agent" chart passes
+    ``layer="L1_managed_agent"`` so a LOB's managed-agent signal is not blended
+    with that LOB's interactive-tool usage (Tool-view territory).
+    """
     all_rows = sessions if sessions is not None else load_sessions()
     manifest = manifest or load_manifest()
+    if layer is not None:
+        all_rows = [s for s in all_rows if s.layer == layer]
     scoped = filter_weeks(all_rows, week_from, week_to)
 
     def match(s: Session) -> bool:
@@ -93,7 +103,9 @@ def classify(
     rows = [s for s in scoped if match(s)]
     if not rows:
         return {"lob_id": lob_id, "tool_id": tool_id, "week_from": week_from,
-                "week_to": week_to, "quadrant": None, "reason": "no sessions in range"}
+                "week_to": week_to,
+                **({"layer": layer} if layer is not None else {}),
+                "quadrant": None, "reason": "no sessions in range"}
 
     if lob_id is not None:
         addressable = manifest.users_per_lob.get(lob_id, len({s.user_id for s in all_rows}))
@@ -135,6 +147,7 @@ def classify(
         "tool_id": tool_id,
         "week_from": week_from,
         "week_to": week_to,
+        **({"layer": layer} if layer is not None else {}),
         "quadrant": quadrant,
         "signals": {
             "penetration_growth_rate_per_week": round(growth, 4),
@@ -166,6 +179,7 @@ def classify_batch(
     week_to: int,
     sessions: Sequence[Session] | None = None,
     manifest: Manifest | None = None,
+    layer: str | None = None,
 ) -> dict[str, Any]:
     """Quadrant for many slices in one call.
 
@@ -175,20 +189,28 @@ def classify_batch(
     - one list given: those LOBs (LOB-level) or those tools (tool-level).
     - both lists given: the cross product of cells.
 
+    ``layer`` scopes every classification to that session layer. With
+    ``layer="L1_managed_agent"`` and no id lists the batch returns one row per
+    LOB (its managed-agent aggregate) and one row per (LOB, managed_agent) cell
+    — this is what the Group Overview "LOB x Agent" chart should call, so it
+    never blends in interactive-tool usage.
+
     Result rows are the same shape ``classify`` returns, collected under
     ``results``. Single-slice callers keep using ``classify`` directly.
     """
     all_rows = sessions if sessions is not None else load_sessions()
     manifest = manifest or load_manifest()
+    scope_rows = [s for s in all_rows if layer is None or s.layer == layer]
 
-    present_lobs = sorted({s.lob_id for s in all_rows})
-    present_tools = sorted({s.tool_id for s in all_rows})
-    present_cells = sorted({(s.lob_id, s.tool_id) for s in all_rows})
+    present_lobs = sorted({s.lob_id for s in scope_rows})
+    present_tools = sorted({s.tool_id for s in scope_rows})
+    present_cells = sorted({(s.lob_id, s.tool_id) for s in scope_rows})
 
     targets: list[tuple[str | None, str | None]] = []
     if lob_ids is None and tool_ids is None:
         targets += [(lob, None) for lob in present_lobs]
-        targets += [(None, tool) for tool in present_tools]
+        if layer is None:
+            targets += [(None, tool) for tool in present_tools]
         targets += list(present_cells)
     elif lob_ids is not None and tool_ids is not None:
         targets += [(lob, tool) for lob in lob_ids for tool in tool_ids]
@@ -198,12 +220,13 @@ def classify_batch(
         targets += [(None, tool) for tool in tool_ids]
 
     results = [
-        classify(lob, tool, week_from, week_to, sessions=all_rows, manifest=manifest)
+        classify(lob, tool, week_from, week_to, sessions=all_rows, manifest=manifest, layer=layer)
         for lob, tool in targets
     ]
     return {
         "week_from": week_from,
         "week_to": week_to,
+        **({"layer": layer} if layer is not None else {}),
         "count": len(results),
         "results": results,
     }
