@@ -1,7 +1,7 @@
 from .adoption import adoption
 from .antipattern import detect
 from .cost import cost_equation, driver_decomposition
-from .quadrant import classify
+from .quadrant import classify, classify_batch
 from .recommendation import recommend
 
 __all__ = [
@@ -10,5 +10,6 @@ __all__ = [
     "adoption",
     "detect",
     "classify",
+    "classify_batch",
     "recommend",
 ]

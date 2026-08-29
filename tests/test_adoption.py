@@ -81,6 +81,42 @@ def test_arc_commercial_lending_credit_memo_low_engagement(arcs):
     assert sum(growths) / len(growths) < 0.05  # essentially flat once onboarded
 
 
+@pytest.mark.parametrize("group_by", ["lob", "tool", "lob_tool"])
+def test_funnel_is_monotonically_non_increasing(group_by):
+    """Eligible >= Onboarded >= Activated >= Habitual >= Power user for every
+    slice, by construction (each stage is a subset of the previous)."""
+    res = adoption(group_by, 1, 12)
+    for sl in res["slices"]:
+        f = sl["funnel"]
+        stages = [f["eligible"], f["onboarded"], f["activated"], f["habitual"], f["power_user"]]
+        assert stages == sorted(stages, reverse=True), f"{sl}: {stages}"
+        assert f["as_of_week"] == 12
+
+
+def test_funnel_reference_arc_has_full_five_stages(arcs):
+    """Arc 3: wealth_management portfolio_summarizer is the healthy reference —
+    it should carry users all the way down the funnel to a non-zero power tier."""
+    res = adoption("lob_tool", 1, 12)
+    sl = next(s for s in res["slices"]
+             if s["lob_id"] == "wealth_management" and s["tool_id"] == "portfolio_summarizer")
+    f = sl["funnel"]
+    assert f["eligible"] == 18  # wealth_management roster
+    assert f["onboarded"] >= f["activated"] >= f["habitual"] >= 1
+    assert f["power_user"] >= 1
+
+
+def test_funnel_stalled_arc_thins_out(arcs):
+    """Arc 4: retail_banking aml_alert_triage is stalled — the funnel should
+    collapse (no habitual users)."""
+    res = adoption("lob_tool", 1, 12)
+    sl = next(s for s in res["slices"]
+             if s["lob_id"] == "retail_banking" and s["tool_id"] == "aml_alert_triage")
+    f = sl["funnel"]
+    assert f["onboarded"] < f["eligible"]   # weak onboarding
+    assert f["habitual"] == 0
+    assert f["power_user"] == 0
+
+
 def test_wealth_portfolio_summarizer_is_growing(arcs):
     """Arc 3: reference implementation — adoption climbs."""
     res = adoption("lob_tool", 1, 12)

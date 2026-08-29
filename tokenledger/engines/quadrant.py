@@ -157,3 +157,53 @@ def _peer_groups(scoped: Sequence[Session], agentlike: bool) -> dict[tuple[str, 
             continue
         out.setdefault((s.lob_id, s.tool_id), []).append(s)
     return out
+
+
+def classify_batch(
+    lob_ids: list[str] | None,
+    tool_ids: list[str] | None,
+    week_from: int,
+    week_to: int,
+    sessions: Sequence[Session] | None = None,
+    manifest: Manifest | None = None,
+) -> dict[str, Any]:
+    """Quadrant for many slices in one call.
+
+    - ``lob_ids`` and ``tool_ids`` both ``None`` (bare ``/quadrant``): every LOB
+      (LOB-level, ``tool_id`` null), every tool (tool-level, ``lob_id`` null),
+      and every (lob, tool) cell that has sessions.
+    - one list given: those LOBs (LOB-level) or those tools (tool-level).
+    - both lists given: the cross product of cells.
+
+    Result rows are the same shape ``classify`` returns, collected under
+    ``results``. Single-slice callers keep using ``classify`` directly.
+    """
+    all_rows = sessions if sessions is not None else load_sessions()
+    manifest = manifest or load_manifest()
+
+    present_lobs = sorted({s.lob_id for s in all_rows})
+    present_tools = sorted({s.tool_id for s in all_rows})
+    present_cells = sorted({(s.lob_id, s.tool_id) for s in all_rows})
+
+    targets: list[tuple[str | None, str | None]] = []
+    if lob_ids is None and tool_ids is None:
+        targets += [(lob, None) for lob in present_lobs]
+        targets += [(None, tool) for tool in present_tools]
+        targets += list(present_cells)
+    elif lob_ids is not None and tool_ids is not None:
+        targets += [(lob, tool) for lob in lob_ids for tool in tool_ids]
+    elif lob_ids is not None:
+        targets += [(lob, None) for lob in lob_ids]
+    else:  # tool_ids is not None
+        targets += [(None, tool) for tool in tool_ids]
+
+    results = [
+        classify(lob, tool, week_from, week_to, sessions=all_rows, manifest=manifest)
+        for lob, tool in targets
+    ]
+    return {
+        "week_from": week_from,
+        "week_to": week_to,
+        "count": len(results),
+        "results": results,
+    }

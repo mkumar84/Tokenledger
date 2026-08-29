@@ -15,7 +15,7 @@ This phase = the four backend engines + the API contract. No frontend yet.
 ```bash
 pip install -r requirements.txt
 python run.py                 # http://localhost:8000/docs
-pytest -q                     # 58 tests, incl. all 8 planted-arc assertions
+pytest -q                     # 68 tests, incl. all 8 planted-arc assertions
 ```
 
 Data lives in [`data/`](data/) (`sessions.jsonl`, `manifest.json`) copied from
@@ -51,6 +51,11 @@ Per slice, per week: **WAU**, **WoW growth**, **activation rate** (≥3 sessions
 the first 2 weeks of the user's cohort), **sessions/user/week**, **retention**
 (prior-week actives still active).
 
+- **Funnel** — per slice, a monotonically non-increasing snapshot as of the
+  range's last week: **Eligible ≥ Onboarded ≥ Activated ≥ Habitual ≥ Power
+  user**. Each stage is a strict subset of the previous. `habitual` = activated
+  + a ≥4-consecutive-week active run; `power_user` = habitual + top decile of
+  sessions/active-week *within the slice*.
 - **Non-human session share** — stubbed to `0.0`. v1 data is 100%
   human-initiated; managed-agent-initiated sessions are *not* fabricated.
 - **Seat utilization** — tool-dimension slices only (`group_by` `tool` /
@@ -146,11 +151,14 @@ history) unless noted.
 | `GET /adoption` | `group_by=lob\|tool\|lob_tool`, `week_from`, `week_to` |
 | `GET /anti-patterns` | `group_by=lob\|tool`, `week_from`, `week_to` |
 | `GET /recommendations` | `week_from`, `week_to` |
-| `GET /quadrant` | `lob_id` and/or `tool_id` (≥1 required), `week_from`, `week_to` (required) |
+| `GET /quadrant` | single: `lob_id` / `tool_id`; batch: `lob_ids` / `tool_ids` (CSV) or none; `week_from`, `week_to` (required) |
 | `GET /health` | — |
 
 OpenAPI docs at `/docs`. Deploy: `railway.json` / `Procfile` provided
-(`healthcheckPath: /health`); `TOKENLEDGER_DATA_DIR` overrides the data path.
+(`healthcheckPath: /health`). Env vars: `TOKENLEDGER_DATA_DIR` (data path),
+`TOKENLEDGER_CORS_ORIGINS` (comma-separated browser origins allowed by CORS —
+**must be set on Railway to the deployed frontend origin(s)**; defaults to
+localhost dev origins only), `TOKENLEDGER_MATERIALITY_USD_PER_WEEK`.
 
 ## Testing (brief §4)
 
@@ -162,8 +170,8 @@ are covered (a meta-test asserts none is left uncovered):
 |-----|-------------|
 | insurance claims_triage wasteful→efficient | quadrant `Growing+Wasteful` (wk 1-6) → `Growing+Efficient` (wk 9-12); anti-patterns present early, gone late |
 | commercial_lending credit_memo stalled+efficient | quadrant `Stalled+Efficient`; enablement rec, adoption impact |
-| wealth_management portfolio_summarizer reference | quadrant `Growing+Efficient`; WAU > 2× |
-| retail_banking aml_alert_triage stalled+wasteful | quadrant `Stalled+Wasteful`; deprecation rec |
+| wealth_management portfolio_summarizer reference | quadrant `Growing+Efficient`; WAU > 2×; funnel carries users to a non-zero `power_user` tier |
+| retail_banking aml_alert_triage stalled+wasteful | quadrant `Stalled+Wasteful`; deprecation rec; funnel collapses (`habitual` = 0) |
 | claude_code cache-expiration cross-LOB | one tool-level rollup covering exactly 3 LOBs; no standalone per-LOB findings |
 | saas_mcp_assist underutilized seats | avg utilization < 55%, flat across all 12 wks (recent trend also low); `action: consolidate`, `wasted_seat_cost_usd` > $1k |
 | cursor seat utilization (adoption ramp) | avg < 60% but recent 3-wk trend ≥ 60% → `action: monitor`, not `consolidate`; no dollar-impact claim |

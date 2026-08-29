@@ -1,7 +1,7 @@
 # TokenLedger API Contract (locked — Phase 1)
 
 Authoritative reference for the Lovable frontend build. **This document is
-generated against the running FastAPI app** (commit `ca8930f`), not from
+generated against the running FastAPI app** (Patch 3), not from
 memory — where it disagrees with an earlier hand-written draft, this document
 wins. Re-verify against `GET /docs` (OpenAPI) after any backend change.
 
@@ -9,6 +9,19 @@ wins. Re-verify against `GET /docs` (OpenAPI) after any backend change.
 - All endpoints are **GET**, read-only, no auth, synthetic data.
 - Interactive docs: `/docs`. Machine-readable schema: `/openapi.json`.
 - Data covers **weeks 1–12**, 4 LOBs, 8 tools, 4231 sessions (`GET /health`).
+
+### Patch 3 additions (additive, no breaking changes)
+
+- **CORS**: the API now sends CORS headers. Allowed browser origins come from
+  the `TOKENLEDGER_CORS_ORIGINS` env var (comma-separated exact origins); with
+  it unset only localhost dev origins are allowed. **The Railway deployment
+  must set `TOKENLEDGER_CORS_ORIGINS` to the real Lovable origin(s)**
+  (e.g. `https://tokenledger.lovable.app,https://preview--tokenledger.lovable.app`).
+  `GET /health` echoes the active list. `allow_credentials` is `false`;
+  methods `GET, OPTIONS`.
+- **`/adoption`**: each slice gains a `funnel` object (5-stage snapshot).
+- **`/quadrant`**: gains batch mode (bare call, or `lob_ids` / `tool_ids`
+  lists). Single-slice calls are unchanged.
 
 ---
 
@@ -45,7 +58,8 @@ The real shapes:
 | `group_by` | `/cost`, `/cost/drivers`, `/adoption` | `lob` \| `tool` \| `lob_tool` | no | `lob` | `/anti-patterns`: `lob` \| `tool` only (**`lob_tool` → 422**) |
 | `week_from`, `week_to` | `/cost`, `/adoption`, `/anti-patterns`, `/recommendations` | int ≥ 1 | no | full history | inclusive; response echoes the value you passed (or `null`) |
 | `a_from`, `a_to`, `b_from`, `b_to` | `/cost/drivers` | int ≥ 1 | **yes** | — | period A and period B week bounds, inclusive |
-| `lob_id`, `tool_id` | `/quadrant` | string | ≥1 of the 2 | — | pass either or both; neither → 422 |
+| `lob_id`, `tool_id` | `/quadrant` | string | no | — | singular → single-slice flat response |
+| `lob_ids`, `tool_ids` | `/quadrant` | CSV string | no | — | plural → batch response; bare `/quadrant` = batch over everything |
 | `week_from`, `week_to` | `/quadrant` | int ≥ 1 | **yes** | — | |
 
 - `group_by=lob` → each slice carries only `lob_id`. `group_by=tool` → only
@@ -69,7 +83,8 @@ The real shapes:
   "lobs": ["insurance", "retail_banking", "wealth_management", "commercial_lending"],
   "tools": ["aml_alert_triage", "claims_triage_agent", "claude_code",
             "credit_memo_agent", "cursor", "fraud_ring_detector",
-            "portfolio_summarizer", "saas_mcp_assist"]
+            "portfolio_summarizer", "saas_mcp_assist"],
+  "cors_allowed_origins": ["http://localhost:5173", "..."]
 }
 ```
 
@@ -161,7 +176,7 @@ Waterfall: `spend_a_usd` → +/− the four `drivers` → `spend_b_usd`.
 
 ## `GET /adoption`
 
-Per slice: `activation_by_cohort_week` (once) + `weeks[]` (per week).
+Per slice: `funnel` (snapshot) + `activation_by_cohort_week` (once) + `weeks[]` (per week).
 
 ```jsonc
 {
@@ -172,6 +187,16 @@ Per slice: `activation_by_cohort_week` (once) + `weeks[]` (per week).
   "slices": [
     {
       "tool_id": "cursor",                    // only the grouped dim key(s)
+      "funnel": {                             // 5-stage snapshot as of the last week in the range
+        "as_of_week": 12,
+        "eligible": 104,        // addressable roster: users_per_lob for a LOB slice;
+                                //   sum over LOBs that use the tool for a tool slice
+        "onboarded": 100,       // >=1 session in the slice by as_of_week
+        "activated": 41,        // >=3 sessions in the first 2 weeks of the user's cohort
+        "habitual": 7,          // activated AND a run of >=4 consecutive weekly-active weeks
+        "power_user": 3,        // habitual AND top 10% of sessions/active-week within the slice
+        "definitions": { "eligible": "...", "onboarded": "...", /* ... */ }
+      },
       "activation_by_cohort_week": {
         "1": { "onboarded": 3, "activated": 2, "activation_rate": 0.6667 },
         "3": { "onboarded": 5, "activated": 0, "activation_rate": 0.0 }
@@ -211,6 +236,14 @@ Per slice: `activation_by_cohort_week` (once) + `weeks[]` (per week).
 
 Detect "has seat data" via `seat_utilization?.licensed_seats != null`.
 There is **no trend field here** — recent-trend lives in `/recommendations`.
+
+**`funnel`** — a monotonically non-increasing 5-stage snapshot
+(`eligible >= onboarded >= activated >= habitual >= power_user`, each stage a
+subset of the previous). Computed over each user's full history up to
+`as_of_week` (= the range's last week), so `week_from` does not truncate the
+consecutive-week runs used for `habitual`. `power_user`'s decile threshold is
+computed **within the slice** (LOB / tool / lob_tool per `group_by`), not
+globally. Present on every slice, every `group_by`.
 
 ---
 
@@ -385,7 +418,26 @@ A **status note**, not a task: `impact_type: "adoption"`,
 
 ## `GET /quadrant`
 
-Single slice, Growing/Stalled × Efficient/Wasteful.
+Growing/Stalled × Efficient/Wasteful. `week_from` and `week_to` are **required**.
+
+### Mode selection
+
+| Request | Mode | Response |
+|---|---|---|
+| `?lob_id=X&week_from=&week_to=` | single | **flat object** (below) |
+| `?tool_id=Y&week_from=&week_to=` | single | flat object |
+| `?lob_id=X&tool_id=Y&week_from=&week_to=` | single | flat object |
+| `?week_from=&week_to=` (no id filter) | batch — all | `{results: [...]}` for every LOB, every tool, every populated (lob,tool) cell |
+| `?lob_ids=a,b&week_from=&week_to=` | batch | `{results: [...]}` — those LOBs, LOB-level |
+| `?tool_ids=a,b&week_from=&week_to=` | batch | `{results: [...]}` — those tools, tool-level |
+| `?lob_ids=a,b&tool_ids=c,d&week_from=&week_to=` | batch | `{results: [...]}` — the cross-product cells |
+
+The singular `lob_id` / `tool_id` params keep the **exact pre-Patch-3 flat
+shape** (no `results` key). The plural `lob_ids` / `tool_ids` params (or no id
+param at all) trigger batch mode. Not a breaking change: bare `/quadrant` used
+to 422, now returns the all-slices batch.
+
+### Single-slice (flat) response
 
 Request: `/quadrant?lob_id=insurance&tool_id=claims_triage_agent&week_from=1&week_to=6`
 
@@ -410,8 +462,34 @@ Request: `/quadrant?lob_id=insurance&tool_id=claims_triage_agent&week_from=1&wee
 }
 ```
 
-No data in range → `{"quadrant": null, "reason": "no sessions in range", ...}`
-(HTTP 200). Neither `lob_id` nor `tool_id` supplied → 422.
+No data in range → `{"quadrant": null, "reason": "no sessions in range", ...}` (HTTP 200).
+
+### Batch response
+
+Request: `/quadrant?week_from=1&week_to=12`
+
+```jsonc
+{
+  "week_from": 1,
+  "week_to": 12,
+  "count": 29,
+  "results": [
+    { "lob_id": "insurance", "tool_id": null, "quadrant": "Stalled + Efficient", "signals": { … } },
+    { "lob_id": null, "tool_id": "cursor", "quadrant": "Growing + Efficient", "signals": { … } },
+    { "lob_id": "insurance", "tool_id": "claude_code", "quadrant": "Growing + Efficient", "signals": { … } }
+    // … LOB-level rows (tool_id null), tool-level rows (lob_id null), then cells
+  ]
+}
+```
+
+Each `results[]` entry is exactly the single-slice flat shape (minus the
+echoed `week_from`/`week_to`). **Group Overview**: one
+`GET /quadrant?week_from=1&week_to=12` call, then filter
+`results` to `tool_id === null` → the 4 LOB quadrants (replaces 4 calls).
+**LOB × Tool matrix**: same single call, filter to rows where both ids are
+non-null → the populated cells (replaces up to 32 calls). Empty cells are
+omitted from the bare-batch `results`; request them explicitly with
+`lob_ids=…&tool_ids=…` to get a `quadrant: null` row for a checked-but-empty cell.
 
 ---
 

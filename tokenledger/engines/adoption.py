@@ -8,10 +8,17 @@ Per group_by slice and per week:
   * Non-human session share  -- stubbed to 0.0 for this dataset (see note)
   * Seat utilization + wasted-seat $  -- tool-dimension slices only
 
+Per slice, a ``funnel`` snapshot as of the last week in the range:
+  Eligible >= Onboarded >= Activated >= Habitual >= Power user
+Each stage is a strict subset of the previous, so the funnel is monotonically
+non-increasing by construction.
+
 Cohort note: the locked schema (brief §2) has no ``cohort_start_week`` field,
 so "cohort" is taken as the first week a user is observed active *in that
 slice*. This is the observable proxy for onboarding and is stable under the
-deterministic generator.
+deterministic generator. The funnel (like activation) is computed over the
+user's full session history up to the snapshot week, not just the requested
+window, so consecutive-week runs are not truncated by ``week_from``.
 """
 from __future__ import annotations
 
@@ -30,6 +37,8 @@ from ..slicing import (
 
 ACTIVATION_MIN_SESSIONS = 3
 ACTIVATION_WINDOW_WEEKS = 2  # cohort week and the one after
+HABITUAL_CONSECUTIVE_WEEKS = 4       # weekly-active run to count as habitual
+POWER_USER_TOP_FRACTION = 0.10       # top decile of sessions/active-week in-slice
 
 
 def _wau_by_week(sessions: Sequence[Session]) -> dict[int, set[str]]:
@@ -73,6 +82,86 @@ def _activation(
     for c_week, b in per_cohort.items():
         b["activation_rate"] = round(safe_div(b["activated"], b["onboarded"]), 4)
     return per_cohort
+
+
+def _longest_active_run(active_weeks: set[int], up_to: int) -> int:
+    """Longest run of consecutive weeks in [1, up_to] all present in active_weeks."""
+    best = run = 0
+    for w in range(1, up_to + 1):
+        run = run + 1 if w in active_weeks else 0
+        best = max(best, run)
+    return best
+
+
+def _funnel(
+    slice_sessions: Sequence[Session],
+    manifest: Manifest,
+    dims: Sequence[str],
+    key: SliceKey,
+    as_of_week: int,
+) -> dict[str, Any]:
+    """Five-stage funnel snapshot: Eligible >= Onboarded >= Activated >= Habitual
+    >= Power user. Each stage is a subset of the previous one."""
+    cohort = _cohort_week(slice_sessions)
+    sess_uw = _sessions_by_user_week(slice_sessions)
+
+    # Eligible: the addressable roster for this slice (from manifest counts).
+    if "lob_id" in dims:
+        lob_id = key[dims.index("lob_id")]
+        eligible = manifest.users_per_lob.get(lob_id, len({s.user_id for s in slice_sessions}))
+    else:  # tool-only slice: every LOB that actually uses this tool
+        lobs_using = {s.lob_id for s in slice_sessions}
+        eligible = sum(manifest.users_per_lob.get(lob, 0) for lob in lobs_using) \
+            or len({s.user_id for s in slice_sessions})
+
+    onboarded = {u for u, cw in cohort.items() if cw <= as_of_week}
+
+    activated: set[str] = set()
+    active_weeks: dict[str, set[str]] = {}
+    total_sessions: dict[str, int] = {}
+    for u in onboarded:
+        cw = cohort[u]
+        window = range(cw, cw + ACTIVATION_WINDOW_WEEKS)
+        if sum(sess_uw.get((u, w), 0) for w in window) >= ACTIVATION_MIN_SESSIONS:
+            activated.add(u)
+        weeks = {w for (uu, w), n in sess_uw.items() if uu == u and w <= as_of_week and n > 0}
+        active_weeks[u] = weeks
+        total_sessions[u] = sum(n for (uu, w), n in sess_uw.items() if uu == u and w <= as_of_week)
+
+    habitual = {
+        u for u in activated
+        if _longest_active_run(active_weeks[u], as_of_week) >= HABITUAL_CONSECUTIVE_WEEKS
+    }
+
+    # Power user: top decile by sessions per active week, measured across the
+    # slice's own onboarded population, then intersected with habitual.
+    spw = {u: safe_div(total_sessions[u], len(active_weeks[u])) for u in onboarded if active_weeks[u]}
+    power_user: set[str] = set()
+    if spw:
+        ranked = sorted(spw, key=spw.get, reverse=True)  # type: ignore[arg-type]
+        k = max(1, round(len(ranked) * POWER_USER_TOP_FRACTION))
+        cutoff = spw[ranked[k - 1]]
+        top_decile = {u for u, v in spw.items() if v >= cutoff}
+        power_user = top_decile & habitual
+
+    return {
+        "as_of_week": as_of_week,
+        "eligible": eligible,
+        "onboarded": len(onboarded),
+        "activated": len(activated),
+        "habitual": len(habitual),
+        "power_user": len(power_user),
+        "definitions": {
+            "eligible": "addressable user roster for the slice (manifest counts)",
+            "onboarded": ">=1 session in the slice by the snapshot week",
+            "activated": f">={ACTIVATION_MIN_SESSIONS} sessions in the first "
+                         f"{ACTIVATION_WINDOW_WEEKS} weeks of the user's cohort",
+            "habitual": f"activated AND a run of >={HABITUAL_CONSECUTIVE_WEEKS} "
+                        f"consecutive weekly-active weeks",
+            "power_user": f"habitual AND in the top {POWER_USER_TOP_FRACTION:.0%} of "
+                          f"sessions-per-active-week within the slice",
+        },
+    }
 
 
 def _seat_info(
@@ -164,6 +253,7 @@ def adoption(
 
         out_slices.append({
             **key_payload(key, dims),
+            "funnel": _funnel(slice_sessions, manifest, dims, key, report_hi),
             "activation_by_cohort_week": {
                 str(w): activation[w] for w in sorted(activation)
             },

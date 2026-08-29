@@ -15,8 +15,10 @@ from __future__ import annotations
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__
+from .config import cors_origins
 from .engines import (
     adoption,
     classify,
@@ -25,12 +27,23 @@ from .engines import (
     driver_decomposition,
     recommend,
 )
+from .engines.quadrant import classify_batch
 from .loader import load_manifest, load_sessions
 
 app = FastAPI(
     title="TokenLedger — Tokenomics & Adoption FinOps Copilot",
     version=__version__,
     description="Backend engines for Northbridge Financial Group (synthetic data).",
+)
+
+# Browser CORS. Origins come from TOKENLEDGER_CORS_ORIGINS (comma-separated) at
+# deploy time; defaults to localhost dev origins only. See config.cors_origins.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins(),
+    allow_methods=["GET", "OPTIONS"],
+    allow_headers=["*"],
+    allow_credentials=False,
 )
 
 GroupBy = Literal["lob", "tool", "lob_tool"]
@@ -48,6 +61,7 @@ def health() -> dict:
         "weeks": list(m.weeks),
         "lobs": m.lobs,
         "tools": sorted(m.tool_registry),
+        "cors_allowed_origins": cors_origins(),
     }
 
 
@@ -121,13 +135,30 @@ def recommendations_endpoint(
     return _err(recommend, week_from=week_from, week_to=week_to)
 
 
+def _csv(val: str | None) -> list[str] | None:
+    if val is None:
+        return None
+    items = [x.strip() for x in val.split(",") if x.strip()]
+    return items or None
+
+
 @app.get("/quadrant")
 def quadrant_endpoint(
     lob_id: str | None = None,
     tool_id: str | None = None,
+    lob_ids: str | None = Query(None, description="comma-separated; batch mode"),
+    tool_ids: str | None = Query(None, description="comma-separated; batch mode"),
     week_from: int = Query(..., ge=1),
     week_to: int = Query(..., ge=1),
 ) -> dict:
-    if lob_id is None and tool_id is None:
-        raise HTTPException(status_code=422, detail="pass at least one of lob_id, tool_id")
-    return classify(lob_id, tool_id, week_from, week_to)
+    lids = _csv(lob_ids)
+    tids = _csv(tool_ids)
+
+    # Single-slice mode (unchanged contract): a singular lob_id/tool_id and no
+    # plural list params -> flat object response.
+    if lids is None and tids is None and (lob_id is not None or tool_id is not None):
+        return classify(lob_id, tool_id, week_from, week_to)
+
+    # Batch mode: bare /quadrant -> every LOB, every tool, every populated cell;
+    # explicit lists -> just those (cross product when both lists are given).
+    return classify_batch(lids, tids, week_from, week_to)
