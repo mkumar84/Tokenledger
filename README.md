@@ -132,6 +132,10 @@ Wasteful, from WoW adoption growth + cost-per-session level & trend:
 
 ## API
 
+**Full locked contract for the frontend build: [`API_CONTRACT.md`](API_CONTRACT.md)**
+(generated against the running app — regenerate it from `/docs` after any
+backend change).
+
 Read-only. `week_from` / `week_to` are inclusive and optional (default = full
 history) unless noted.
 
