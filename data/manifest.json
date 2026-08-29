@@ -23,14 +23,16 @@
       "category": "interactive_dev_harness",
       "pricing_model": "seat_plus_usage",
       "cost_per_seat": 40,
-      "owner": "Group Platform Eng"
+      "owner": "Group Platform Eng",
+      "seats_per_lob": 20
     },
     "saas_mcp_assist": {
       "name": "SaaS Workspace Assistant",
       "category": "saas_mcp",
       "pricing_model": "seat_license_plus_usage",
       "cost_per_seat": 60,
-      "owner": "Group Platform Eng"
+      "owner": "Group Platform Eng",
+      "seats_per_lob": 25
     },
     "claims_triage_agent": {
       "name": "Claims Triage Agent",

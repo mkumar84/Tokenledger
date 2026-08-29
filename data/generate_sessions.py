@@ -37,12 +37,12 @@ TOOL_REGISTRY = {
     "cursor": {
         "name": "Cursor", "category": "interactive_dev_harness",
         "pricing_model": "seat_plus_usage", "cost_per_seat": 40,
-        "owner": "Group Platform Eng",
+        "owner": "Group Platform Eng", "seats_per_lob": 20,
     },
     "saas_mcp_assist": {
         "name": "SaaS Workspace Assistant", "category": "saas_mcp",
         "pricing_model": "seat_license_plus_usage", "cost_per_seat": 60,
-        "owner": "Group Platform Eng",
+        "owner": "Group Platform Eng", "seats_per_lob": 25,
     },
     # Managed agents (L1), one primary per LOB (spec §2.3 example set + fraud_ring_detector)
     "claims_triage_agent": {
@@ -219,7 +219,7 @@ def arc_claude_code(lob, week):
 
 # --- Arc 6 (tool-level): SaaS MCP Assist — underutilized seats ------------
 # 30% seat utilization, flat, across ALL LOBs, all weeks. 25 seats per LOB.
-SAAS_MCP_SEATS_PER_LOB = 25
+SAAS_MCP_SEATS_PER_LOB = TOOL_REGISTRY["saas_mcp_assist"]["seats_per_lob"]
 
 def arc_saas_mcp_assist(lob, week):
     return dict(wau_frac=0.30, sessions_per_user=(1, 2), turns=(2, 4),

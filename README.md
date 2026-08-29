@@ -15,7 +15,7 @@ This phase = the four backend engines + the API contract. No frontend yet.
 ```bash
 pip install -r requirements.txt
 python run.py                 # http://localhost:8000/docs
-pytest -q                     # 54 tests, incl. all 8 planted-arc assertions
+pytest -q                     # 55 tests, incl. all 8 planted-arc assertions
 ```
 
 Data lives in [`data/`](data/) (`sessions.jsonl`, `manifest.json`) copied from
@@ -55,9 +55,11 @@ the first 2 weeks of the user's cohort), **sessions/user/week**, **retention**
   human-initiated; managed-agent-initiated sessions are *not* fabricated.
 - **Seat utilization** — tool-dimension slices only (`group_by` `tool` /
   `lob_tool`). `active_users ÷ licensed_seats`, reported as a **percentage** and
-  a **`wasted_seat_cost_usd`** (`unused_seats × cost_per_seat`). Seat counts come
-  from the manifest (`saas_mcp_assist`: 25/LOB). Tools with a `cost_per_seat` but
-  no declared seat count (`cursor`) report `active_users` with a note.
+  a **`wasted_seat_cost_usd`** (`unused_seats × cost_per_seat`). Any tool whose
+  `tool_registry` entry declares `seats_per_lob` gets this treatment — presence
+  of the field, not the tool name (`saas_mcp_assist`: 25/LOB, `cursor`: 20/LOB).
+  `group_by=tool` sums seats across all 4 LOBs. Tools with a `cost_per_seat` but
+  no `seats_per_lob` report `active_users` with a note.
 
 ### 3. Anti-Pattern Detector — `tokenledger/engines/antipattern.py`
 
@@ -161,9 +163,10 @@ are covered (a meta-test asserts none is left uncovered):
    slice. Stable under the deterministic generator but not identical to the
    generator's `cohort_start_week`. **Ask:** expose `cohort_start_week` (per user
    or as a roster file) if exact activation cohorts matter.
-3. **`cursor` has `cost_per_seat` ($40) but no seat count** anywhere in the
-   manifest, so seat utilization can't be computed for it — only `active_users`
-   is reported. **Ask:** add `cursor` seat counts if seat utilization is wanted
-   there.
+
+*Resolved in the Phase 1 patch:* `cursor` now declares `seats_per_lob: 20` in
+`tool_registry`; the loader picks up `seats_per_lob` from any registry entry by
+field presence, so seat utilization + wasted-$ compute for `cursor` with no
+name special-casing.
 
 No schema changes, no generator changes, no 5th dimension were made.

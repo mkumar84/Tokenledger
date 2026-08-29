@@ -39,6 +39,25 @@ def test_seat_utilization_only_for_tool_slices():
         assert su["wasted_seat_cost_usd"] == pytest.approx(su["unused_seats"] * 60, abs=0.01)
 
 
+def test_cursor_seat_utilization_computed_from_registry_field():
+    """Phase 1 patch: cursor now declares seats_per_lob (20) in tool_registry,
+    so it gets the same seat-utilization + wasted-$ treatment as saas_mcp_assist
+    — no name special-casing."""
+    tool = adoption("tool", 1, 12)
+    cursor = next(s for s in tool["slices"] if s["tool_id"] == "cursor")
+    for w in cursor["weeks"]:
+        su = w["seat_utilization"]
+        assert su["licensed_seats"] == 80  # 20/LOB x 4 LOBs
+        assert su["active_users"] <= su["licensed_seats"] or su["utilization_pct"] > 100
+        assert su["cost_per_seat_usd"] == 40
+        assert su["wasted_seat_cost_usd"] == pytest.approx(su["unused_seats"] * 40, abs=0.01)
+        assert "note" not in su  # denominator is known now
+
+    lob_tool = adoption("lob_tool", 1, 12)
+    for sl in (s for s in lob_tool["slices"] if s["tool_id"] == "cursor"):
+        assert all(w["seat_utilization"]["licensed_seats"] == 20 for w in sl["weeks"])
+
+
 def test_arc_saas_mcp_assist_underutilized_seats(arcs):
     """Arc 6: flat, low seat utilization group-wide."""
     arc = arcs["saas_mcp_assist_underutilized_seats"]

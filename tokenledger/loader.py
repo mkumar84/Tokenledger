@@ -115,11 +115,16 @@ def load_manifest() -> Manifest:
         planted_arcs=raw.get("planted_arcs", []),
         weeks=tuple(raw.get("simulated_weeks", [1, 12])),  # type: ignore[arg-type]
     )
-    # seat counts: only saas_mcp_assist declares one (in its planted arc).
+    # seat counts: any tool that declares `seats_per_lob` in the registry gets
+    # seat-utilization treatment — no tool is special-cased by name. Planted
+    # arcs are a fallback for older manifests that only carried it there.
+    for tool_id, meta in m.tool_registry.items():
+        if meta.get("seats_per_lob") is not None:
+            m.seats_per_lob[tool_id] = meta["seats_per_lob"]
     for arc in m.planted_arcs:
         tool = arc.get("tool_or_agent")
         if tool and "seats_per_lob" in arc:
-            m.seats_per_lob[tool] = arc["seats_per_lob"]
+            m.seats_per_lob.setdefault(tool, arc["seats_per_lob"])
     # LOB owners: owning managed agent's owner.
     for lob, agents in m.lob_managed_agents.items():
         if agents:
