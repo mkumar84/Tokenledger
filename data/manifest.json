@@ -1,0 +1,201 @@
+{
+  "generator_seed": 42,
+  "simulated_weeks": [
+    1,
+    12
+  ],
+  "lobs": [
+    "insurance",
+    "retail_banking",
+    "wealth_management",
+    "commercial_lending"
+  ],
+  "tool_registry": {
+    "claude_code": {
+      "name": "Claude Code",
+      "category": "interactive_dev_harness",
+      "pricing_model": "per_token",
+      "cost_per_seat": null,
+      "owner": "Group Platform Eng"
+    },
+    "cursor": {
+      "name": "Cursor",
+      "category": "interactive_dev_harness",
+      "pricing_model": "seat_plus_usage",
+      "cost_per_seat": 40,
+      "owner": "Group Platform Eng"
+    },
+    "saas_mcp_assist": {
+      "name": "SaaS Workspace Assistant",
+      "category": "saas_mcp",
+      "pricing_model": "seat_license_plus_usage",
+      "cost_per_seat": 60,
+      "owner": "Group Platform Eng"
+    },
+    "claims_triage_agent": {
+      "name": "Claims Triage Agent",
+      "category": "managed_agent",
+      "pricing_model": "per_token",
+      "cost_per_seat": null,
+      "owner": "Insurance AI Lead"
+    },
+    "fraud_ring_detector": {
+      "name": "Fraud Ring Detector",
+      "category": "managed_agent",
+      "pricing_model": "per_token",
+      "cost_per_seat": null,
+      "owner": "Insurance AI Lead"
+    },
+    "aml_alert_triage": {
+      "name": "AML Alert Triage",
+      "category": "managed_agent",
+      "pricing_model": "per_token",
+      "cost_per_seat": null,
+      "owner": "Retail Banking AI Lead"
+    },
+    "portfolio_summarizer": {
+      "name": "Portfolio Summarizer",
+      "category": "managed_agent",
+      "pricing_model": "per_token",
+      "cost_per_seat": null,
+      "owner": "Wealth Management AI Lead"
+    },
+    "credit_memo_agent": {
+      "name": "Credit Memo Drafting Agent",
+      "category": "managed_agent",
+      "pricing_model": "per_token",
+      "cost_per_seat": null,
+      "owner": "Commercial Lending AI Lead"
+    }
+  },
+  "lob_managed_agents": {
+    "insurance": [
+      "claims_triage_agent",
+      "fraud_ring_detector"
+    ],
+    "retail_banking": [
+      "aml_alert_triage"
+    ],
+    "wealth_management": [
+      "portfolio_summarizer"
+    ],
+    "commercial_lending": [
+      "credit_memo_agent"
+    ]
+  },
+  "total_users": 104,
+  "users_per_lob": {
+    "insurance": 32,
+    "retail_banking": 40,
+    "wealth_management": 18,
+    "commercial_lending": 14
+  },
+  "planted_arcs": [
+    {
+      "arc": "insurance_claims_triage_wasteful_to_efficient",
+      "lob": "insurance",
+      "tool_or_agent": "claims_triage_agent",
+      "week_range": [
+        1,
+        6
+      ],
+      "transition_week": 7,
+      "resolved_week": 9,
+      "intended_finding": "Growing + Wasteful -> cache-TTL & model-tier fix -> Growing + Efficient",
+      "type": "lob_level_quadrant"
+    },
+    {
+      "arc": "commercial_lending_credit_memo_stalled_efficient",
+      "lob": "commercial_lending",
+      "tool_or_agent": "credit_memo_agent",
+      "week_range": [
+        1,
+        12
+      ],
+      "intended_finding": "Stalled + Efficient (enablement gap, not a cost problem)",
+      "type": "lob_level_quadrant"
+    },
+    {
+      "arc": "wealth_management_portfolio_summarizer_reference",
+      "lob": "wealth_management",
+      "tool_or_agent": "portfolio_summarizer",
+      "week_range": [
+        1,
+        12
+      ],
+      "intended_finding": "Growing + Efficient from week 1 (reference implementation baseline)",
+      "type": "lob_level_quadrant"
+    },
+    {
+      "arc": "retail_banking_aml_alert_triage_stalled_wasteful",
+      "lob": "retail_banking",
+      "tool_or_agent": "aml_alert_triage",
+      "week_range": [
+        1,
+        12
+      ],
+      "intended_finding": "Stalled + Wasteful (deprecation candidate)",
+      "type": "lob_level_quadrant"
+    },
+    {
+      "arc": "claude_code_cache_expiration_cross_lob",
+      "lobs": [
+        "insurance",
+        "retail_banking",
+        "wealth_management"
+      ],
+      "tool_or_agent": "claude_code",
+      "week_range": [
+        1,
+        8
+      ],
+      "resolved_week": 9,
+      "intended_finding": "Cache-expiration churn in 3 of 4 LOBs simultaneously -> tool-level rollup, one platform fix",
+      "type": "tool_level_anti_pattern"
+    },
+    {
+      "arc": "saas_mcp_assist_underutilized_seats",
+      "lobs": [
+        "insurance",
+        "retail_banking",
+        "wealth_management",
+        "commercial_lending"
+      ],
+      "tool_or_agent": "saas_mcp_assist",
+      "week_range": [
+        1,
+        12
+      ],
+      "seat_utilization_pct": 30,
+      "seats_per_lob": 25,
+      "cost_per_seat": 60,
+      "intended_finding": "Flat 30% seat utilization group-wide -> renewal/consolidation recommendation",
+      "type": "tool_level_governance"
+    },
+    {
+      "arc": "cursor_claude_code_consolidation_candidate_wealth_mgmt",
+      "lob": "wealth_management",
+      "tools": [
+        "cursor",
+        "claude_code"
+      ],
+      "week_range": [
+        1,
+        12
+      ],
+      "intended_finding": "Near-identical usage shape, single LOB -> localized consolidation flag",
+      "type": "tool_level_governance"
+    },
+    {
+      "arc": "cursor_commercial_lending_legitimate_variance",
+      "lob": "commercial_lending",
+      "tool_or_agent": "cursor",
+      "week_range": [
+        1,
+        12
+      ],
+      "intended_finding": "Higher output-tokens/session due to larger documents, NOT waste -- good outcome rate preserved. Keeps anti-pattern detector honest.",
+      "type": "tool_level_legitimate_variance"
+    }
+  ]
+}
