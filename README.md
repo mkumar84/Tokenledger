@@ -15,7 +15,7 @@ This phase = the four backend engines + the API contract. No frontend yet.
 ```bash
 pip install -r requirements.txt
 python run.py                 # http://localhost:8000/docs
-pytest -q                     # 86 tests, incl. all 8 planted-arc assertions
+pytest -q                     # 95 tests + 4 live-API tests skipped without a key
 ```
 
 Data lives in [`data/`](data/) (`sessions.jsonl`, `manifest.json`) copied from
@@ -172,13 +172,28 @@ history) unless noted.
 | `GET /anti-patterns` | `group_by=lob\|tool`, `week_from`, `week_to` |
 | `GET /recommendations` | `week_from`, `week_to` |
 | `GET /quadrant` | single: `lob_id` / `tool_id`; batch: `lob_ids` / `tool_ids` (CSV) or none; `layer` (scope to a session layer — use `L1_managed_agent` for the LOB×Agent chart); `week_from`, `week_to` (required) |
+| `POST /chat` | JSON body: `question`, `week_from?`, `week_to?`, `conversation_history?` — "Ask TokenLedger" grounded Q&A (Claude Haiku 4.5); read-only; 20 req / 10 min per IP |
 | `GET /health` | — |
+
+### 5. "Ask TokenLedger" grounded chat — `tokenledger/chat.py`
+
+`POST /chat` answers leadership questions in one line. The load-bearing rule:
+**grounded, not generative** — the model (Haiku 4.5) sees only a JSON bundle
+assembled in-process from the `cost` / `adoption` / `quadrant` /
+`recommendation` / `anti-pattern` engine outputs for the requested week range
+(`build_context`), never raw sessions and never an aggregate computed here. The
+system prompt forbids guessing and forbids phrasing an answer as an action.
+Conversation history is client-supplied, never stored. In-process sliding-window
+rate limit (`tokenledger/ratelimit.py`), 20 / 10 min per IP. First component
+with a live paid-API dependency — needs `ANTHROPIC_API_KEY`.
 
 OpenAPI docs at `/docs`. Deploy: `railway.json` / `Procfile` provided
 (`healthcheckPath: /health`). Env vars: `TOKENLEDGER_DATA_DIR` (data path),
 `TOKENLEDGER_CORS_ORIGINS` (comma-separated browser origins allowed by CORS —
 **must be set on Railway to the deployed frontend origin(s)**; defaults to
-localhost dev origins only), `TOKENLEDGER_MATERIALITY_USD_PER_WEEK`.
+localhost dev origins only), **`ANTHROPIC_API_KEY`** (**required for `POST
+/chat`** — server-side only; `GET /health` → `chat_configured` reports whether
+it's set), `TOKENLEDGER_MATERIALITY_USD_PER_WEEK`.
 
 ## Testing (brief §4)
 

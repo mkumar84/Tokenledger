@@ -6,9 +6,22 @@ memory — where it disagrees with an earlier hand-written draft, this document
 wins. Re-verify against `GET /docs` (OpenAPI) after any backend change.
 
 - Base: the deployed Railway URL, or `http://localhost:8000` locally.
-- All endpoints are **GET**, read-only, no auth, synthetic data.
+- Every endpoint is **GET and read-only** except **`POST /chat`** (Patch 7),
+  which is still read-only in effect — it only reads aggregates and returns text.
+  No auth, synthetic data.
 - Interactive docs: `/docs`. Machine-readable schema: `/openapi.json`.
 - Data covers **weeks 1–12**, 4 LOBs, 8 tools, 4231 sessions (`GET /health`).
+
+### Patch 7 additions
+
+- **`POST /chat`** — "Ask TokenLedger" grounded natural-language Q&A. A real
+  Claude API call (Haiku 4.5), grounded strictly in the same engine aggregates
+  the dashboards render. First component with a live paid-API dependency:
+  needs **`ANTHROPIC_API_KEY`** set on Railway (server-side only, never
+  returned). Rate-limited to 20 questions / 10 min per client IP → `429`.
+  Returns `503` when the key is unset.
+- **`/health`** gains `chat_configured` (bool).
+- CORS now allows `POST` in addition to `GET`, `OPTIONS`.
 
 ### Patch 3 additions (additive, no breaking changes)
 
@@ -142,11 +155,73 @@ The real shapes:
     "wealth_management": ["portfolio_summarizer"],
     "commercial_lending": ["credit_memo_agent"]
   },
-  "cors_allowed_origins": ["http://localhost:5173", "..."]
+  "cors_allowed_origins": ["http://localhost:5173", "..."],
+  "chat_configured": true                // Patch 7 — is POST /chat usable on this deploy
 }
 ```
 
 `GET /` returns `{"service", "version", "endpoints": [...]}`.
+
+---
+
+## `POST /chat` — "Ask TokenLedger" (Patch 7)
+
+Grounded natural-language Q&A over the current fleet data. A real Claude API
+call (Haiku 4.5); the model answers **only** from a JSON bundle of the same
+`/cost`, `/adoption`, `/quadrant`, `/recommendations`, and `/anti-patterns`
+aggregates the dashboards render — it never sees raw session rows and never
+computes its own aggregate. Read-only: the system prompt forbids phrasing an
+answer as though an action was taken.
+
+### Request
+
+```jsonc
+{
+  "question": "Which line of business has the most usage?",   // 1–2000 chars, required
+  "week_from": 1,                        // optional, ≥1; defaults to full history
+  "week_to": 12,                         // optional, ≥1
+  "conversation_history": [              // optional, client-supplied, NEVER stored server-side
+    { "role": "user", "content": "..." },
+    { "role": "assistant", "content": "..." }
+  ]                                      // ≤40 turns, ≤8000 chars each
+}
+```
+
+Send the **full** `conversation_history` on every turn (the server is
+stateless) and the **current** `week_from`/`week_to` the Group Overview page is
+scoped to.
+
+### Response `200`
+
+```jsonc
+{
+  "answer": "Retail Banking has the highest weekly active users at 35 in week 12, ahead of Insurance (32)…",
+  "grounded_in": ["cost:lob", "adoption:lob", "adoption:tool",
+                  "quadrant:layer=L1_managed_agent", "quadrant:tool",
+                  "recommendations", "anti-patterns:tool"]
+}
+```
+
+`grounded_in` lists which internal sources were pulled into context — a debug
+aid, not required for rendering.
+
+### Error responses
+
+| Status | When | `detail` |
+|---|---|---|
+| `422` | empty/overlong question, bad history role | pydantic validation error |
+| `429` | > 20 questions / 10 min from this IP | "Too many questions in a short window — try again in a few minutes." (+ `Retry-After` header) |
+| `502` | upstream Claude API error / timeout | "The assistant is temporarily unavailable." |
+| `503` | `ANTHROPIC_API_KEY` unset or invalid on the deployment | "Ask TokenLedger is not configured…" |
+
+Frontend: show the `429` and `503` details verbatim; treat `502` as a
+transient "try again". Expect **1–3 s latency** — show a thinking indicator.
+Plain-text answers only for v1 (no charts/tables/action buttons in chat).
+
+### Deployment
+
+`ANTHROPIC_API_KEY` must be set on Railway (server-side; never returned or
+logged). Check `GET /health` → `chat_configured`.
 
 ---
 

@@ -14,10 +14,13 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Query
+import anthropic
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
 from . import __version__
+from .chat import answer_question, is_configured
 from .config import cors_origins
 from .engines import (
     adoption,
@@ -29,6 +32,7 @@ from .engines import (
 )
 from .engines.quadrant import classify_batch
 from .loader import load_manifest, load_sessions
+from .ratelimit import SlidingWindowLimiter
 
 app = FastAPI(
     title="TokenLedger — Tokenomics & Adoption FinOps Copilot",
@@ -41,13 +45,16 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins(),
-    allow_methods=["GET", "OPTIONS"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
     allow_credentials=False,
 )
 
 GroupBy = Literal["lob", "tool", "lob_tool"]
 AntiGroupBy = Literal["lob", "tool"]
+
+# "Ask TokenLedger" chat: 20 questions / 10 min per client IP (Backend Patch 7).
+CHAT_LIMITER = SlidingWindowLimiter(max_requests=20, window_seconds=600)
 
 
 @app.get("/health")
@@ -66,6 +73,7 @@ def health() -> dict:
         "tool_categories": {t: meta.get("category") for t, meta in m.tool_registry.items()},
         "lob_managed_agents": m.lob_managed_agents,
         "cors_allowed_origins": cors_origins(),
+        "chat_configured": is_configured(),  # POST /chat needs ANTHROPIC_API_KEY
     }
 
 
@@ -76,7 +84,7 @@ def root() -> dict:
         "version": __version__,
         "endpoints": [
             "/cost", "/cost/drivers", "/adoption", "/anti-patterns",
-            "/recommendations", "/quadrant", "/health",
+            "/recommendations", "/quadrant", "/chat", "/health",
         ],
     }
 
@@ -177,3 +185,54 @@ def quadrant_endpoint(
     # Batch mode: bare /quadrant -> every LOB, every tool, every populated cell;
     # explicit lists -> just those (cross product when both lists are given).
     return classify_batch(lids, tids, week_from, week_to, layer=layer)
+
+
+# --- "Ask TokenLedger" grounded chat (Backend Patch 7) ------------------
+
+class ChatTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(..., min_length=1, max_length=8000)
+
+
+class ChatRequest(BaseModel):
+    question: str = Field(..., min_length=1, max_length=2000)
+    week_from: int | None = Field(None, ge=1)
+    week_to: int | None = Field(None, ge=1)
+    conversation_history: list[ChatTurn] = Field(default_factory=list, max_length=40)
+
+
+@app.post("/chat")
+def chat_endpoint(body: ChatRequest, request: Request) -> dict:
+    """Natural-language Q&A grounded in the dashboard aggregates. Real Claude
+    API call; read-only; conversation history is client-supplied and never
+    stored server-side."""
+    if not is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Ask TokenLedger is not configured on this deployment "
+                   "(ANTHROPIC_API_KEY is unset).",
+        )
+
+    client_ip = request.client.host if request.client else "unknown"
+    if not CHAT_LIMITER.check(client_ip):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many questions in a short window — try again in a few minutes.",
+            headers={"Retry-After": str(CHAT_LIMITER.retry_after_seconds(client_ip))},
+        )
+
+    try:
+        return answer_question(
+            body.question, body.week_from, body.week_to, body.conversation_history
+        )
+    except anthropic.AuthenticationError as e:  # bad/expired key -> config problem
+        raise HTTPException(status_code=503, detail="Ask TokenLedger is misconfigured.") from e
+    except anthropic.RateLimitError as e:
+        raise HTTPException(
+            status_code=429,
+            detail="The assistant is briefly rate-limited upstream — try again shortly.",
+        ) from e
+    except (anthropic.APIStatusError, anthropic.APIConnectionError, anthropic.APITimeoutError) as e:
+        raise HTTPException(
+            status_code=502, detail="The assistant is temporarily unavailable."
+        ) from e
