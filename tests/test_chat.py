@@ -145,6 +145,49 @@ def test_chat_grounding_live(question, must_include):
 
 
 @needs_key
+def test_chat_multi_turn_ranking_min_is_correct_live():
+    """Regression for the live failure: Haiku retrieved both numbers but inverted
+    the comparison. Multi-turn, 3+ comparable values, ending in 'which has the
+    fewest' — the stated minimum must match the actual minimum in the bundle."""
+    bundle, _ = build_context(1, 12)
+    wau12 = {sl["lob_id"]: sl["weeks"][-1]["wau"] for sl in bundle["adoption_by_lob"]["slices"]}
+    assert len(wau12) >= 3
+    min_lob = min(wau12, key=wau12.get)
+    max_lob = max(wau12, key=wau12.get)
+    frag = lambda lob: lob.split("_")[0]  # "commercial_lending" -> "commercial"
+
+    q1 = "Which line of business has the most weekly active users in week 12?"
+    r1 = client.post("/chat", json={"question": q1, "week_from": 1, "week_to": 12})
+    assert r1.status_code == 200
+    a1 = r1.json()["answer"]
+    assert frag(max_lob) in a1.lower()
+
+    history = [
+        {"role": "user", "content": q1},
+        {"role": "assistant", "content": a1},
+    ]
+    r2 = client.post("/chat", json={
+        "question": "And which one has the fewest?",
+        "week_from": 1, "week_to": 12, "conversation_history": history,
+    })
+    assert r2.status_code == 200
+    a2 = r2.json()["answer"].lower()
+
+    # the correct minimum LOB is named as the answer to "fewest"
+    assert frag(min_lob) in a2
+    # and no other LOB is asserted to be the minimum near a min-keyword
+    for kw in ("fewest", "lowest", "smallest", "least"):
+        idx = a2.find(kw)
+        if idx == -1:
+            continue
+        window = a2[max(0, idx - 140): idx + 140]
+        wrong = [frag(l) for l in wau12 if l != min_lob and frag(l) in window]
+        assert not wrong or frag(min_lob) in window, (
+            f"'{kw}' associated with {wrong}, not {min_lob!r}; answer: {a2}"
+        )
+
+
+@needs_key
 def test_chat_refuses_out_of_scope_forecast_live():
     r = client.post("/chat", json={
         "question": "What will total spend be next year?",
